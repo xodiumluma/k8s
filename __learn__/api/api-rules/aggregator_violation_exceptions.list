@@ -4,3 +4,8 @@ API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIGr
 API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResource,Categories
 API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResource,ShortNames
 API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResourceList,APIResources
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIVersions,ServerAddressByClientCIDRs
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIVersions,Versions
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,ApplyOptions,DryRun
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,CreateOptions,DryRun
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,DeleteOptions,DryRun
