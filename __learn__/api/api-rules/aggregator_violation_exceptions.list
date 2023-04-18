@@ -1,0 +1,6 @@
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIGroup,ServerAddressByClientCIDRs
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIGroup,Versions
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIGroupList,Groups
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResource,Categories
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResource,ShortNames
+API rule violation: list_type_missing,k8s.io/apimachinery/pkg/apis/meta/v1,APIResourceList,APIResources
