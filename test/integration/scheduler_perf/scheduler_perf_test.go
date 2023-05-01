@@ -121,6 +121,8 @@ type testCase struct {
 	// This path can be overridden in createPodsOp by setting PodTemplatePath .
 	// Optional
 	DefaultPodTemplatePath *string
+	// Labels can be used to enable or disable workloads inside this test case.
+	Labels []string
 }
 
 func (tc *testCase) collectsMetrics() bool {
@@ -151,6 +153,8 @@ type workload struct {
 	Name string
 	// Values of parameters used in the workloadTemplate.
 	Params params
+	// Labels can be used to enable or disable a workload.
+	Labels []string
 }
 
 type params struct {
@@ -608,6 +612,8 @@ func initTestOutput(tb testing.TB) io.Writer {
 	return output
 }
 
+var perfSchedulingLabelFilter = flag.String("perf-scheduling-label-filter", "performance", "comma-separated list of labels which a testcase must have (no prefix or +) or must not have (-)")
+
 func BenchmarkPerfScheduling(b *testing.B) {
 	testCases, err := getTestCases(configFile)
 	if err != nil {
@@ -632,6 +638,10 @@ func BenchmarkPerfScheduling(b *testing.B) {
 		b.Run(tc.Name, func(b *testing.B) {
 			for _, w := range tc.Workloads {
 				b.Run(w.Name, func(b *testing.B) {
+					if !enabled(*perfSchedulingLabelFilter, append(tc.Labels, w.Labels...)...) {
+						b.Skipf("disabled by label filter %q", *perfSchedulingLabelFilter)
+					}
+
 					// Ensure that there are no leaked
 					// goroutines.  They could influence
 					// performance of the next benchmark.
@@ -835,7 +845,7 @@ func runWorkload(ctx context.Context, b *testing.B, tc *testCase, w *workload) [
 			if concreteOp.CollectMetrics {
 				collectorCtx, collectorCancel = context.WithCancel(ctx)
 				defer collectorCancel()
-				collectors = getTestDataCollectors(podInformer, fmt.Sprintf("%s/%s", b.Name(), namespace), namespace, tc.MetricsCollectorConfig)
+				collectors = getTestDataCollectors(b, podInformer, fmt.Sprintf("%s/%s", b.Name(), namespace), namespace, tc.MetricsCollectorConfig)
 				for _, collector := range collectors {
 					// Need loop-local variable for function below.
 					collector := collector
@@ -1025,12 +1035,12 @@ type testDataCollector interface {
 	collect() []DataItem
 }
 
-func getTestDataCollectors(podInformer coreinformers.PodInformer, name, namespace string, mcc *metricsCollectorConfig) []testDataCollector {
+func getTestDataCollectors(tb testing.TB, podInformer coreinformers.PodInformer, name, namespace string, mcc *metricsCollectorConfig) []testDataCollector {
 	if mcc == nil {
 		mcc = &defaultMetricsCollectorConfig
 	}
 	return []testDataCollector{
-		newThroughputCollector(podInformer, map[string]string{"Name": name}, []string{namespace}),
+		newThroughputCollector(tb, podInformer, map[string]string{"Name": name}, []string{namespace}),
 		newMetricsCollector(mcc, map[string]string{"Name": name}),
 	}
 }
