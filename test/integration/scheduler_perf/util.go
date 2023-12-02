@@ -30,18 +30,23 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourcev1alpha2 "k8s.io/api/resource/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
+	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/component-base/featuregate"
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
-	"k8s.io/kube-scheduler/config/v1beta2"
+	kubeschedulerconfigv1 "k8s.io/kube-scheduler/config/v1"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	kubeschedulerscheme "k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	"k8s.io/kubernetes/test/integration/framework"
@@ -59,7 +64,7 @@ const (
 var dataItemsDir = flag.String("data-items-dir", "", "destination directory for storing generated data items for perf dashboard")
 
 func newDefaultComponentConfig() (*config.KubeSchedulerConfiguration, error) {
-	gvk := v1beta2.SchemeGroupVersion.WithKind("KubeSchedulerConfiguration")
+	gvk := kubeschedulerconfigv1.SchemeGroupVersion.WithKind("KubeSchedulerConfiguration")
 	cfg := config.KubeSchedulerConfiguration{}
 	_, _, err := kubeschedulerscheme.Codecs.UniversalDecoder().Decode(nil, &gvk, &cfg)
 	if err != nil {
@@ -68,29 +73,38 @@ func newDefaultComponentConfig() (*config.KubeSchedulerConfiguration, error) {
 	return &cfg, nil
 }
 
-// mustSetupScheduler starts the following components:
+// mustSetupCluster starts the following components:
 // - k8s api server
 // - scheduler
+// - some of the kube-controller-manager controllers
+//
 // It returns regular and dynamic clients, and destroyFunc which should be used to
 // remove resources after finished.
 // Notes on rate limiter:
 //   - client rate limit is set to 5000.
-func mustSetupScheduler(ctx context.Context, b *testing.B, config *config.KubeSchedulerConfiguration) (coreinformers.PodInformer, clientset.Interface, dynamic.Interface) {
+func mustSetupCluster(ctx context.Context, tb testing.TB, config *config.KubeSchedulerConfiguration, enabledFeatures map[featuregate.Feature]bool) (informers.SharedInformerFactory, clientset.Interface, dynamic.Interface) {
 	// Run API server with minimimal logging by default. Can be raised with -v.
 	framework.MinVerbosity = 0
 
-	_, kubeConfig, tearDownFn := framework.StartTestServer(b, framework.TestServerSetup{
+	_, kubeConfig, tearDownFn := framework.StartTestServer(ctx, tb, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 			// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 			opts.Admission.GenericAdmission.DisablePlugins = []string{"ServiceAccount", "TaintNodesByCondition", "Priority"}
+
+			// Enable DRA API group.
+			if enabledFeatures[features.DynamicResourceAllocation] {
+				opts.APIEnablement.RuntimeConfig = cliflag.ConfigurationMap{
+					resourcev1alpha2.SchemeGroupVersion.String(): "true",
+				}
+			}
 		},
 	})
-	b.Cleanup(tearDownFn)
+	tb.Cleanup(tearDownFn)
 
 	// Cleanup will be in reverse order: first the clients get cancelled,
 	// then the apiserver is torn down.
 	ctx, cancel := context.WithCancel(ctx)
-	b.Cleanup(cancel)
+	tb.Cleanup(cancel)
 
 	// TODO: client connection configuration, such as QPS or Burst is configurable in theory, this could be derived from the `config`, need to
 	// support this when there is any testcase that depends on such configuration.
@@ -103,7 +117,7 @@ func mustSetupScheduler(ctx context.Context, b *testing.B, config *config.KubeSc
 		var err error
 		config, err = newDefaultComponentConfig()
 		if err != nil {
-			b.Fatalf("Error creating default component config: %v", err)
+			tb.Fatalf("Error creating default component config: %v", err)
 		}
 	}
 
@@ -112,29 +126,49 @@ func mustSetupScheduler(ctx context.Context, b *testing.B, config *config.KubeSc
 
 	// Not all config options will be effective but only those mostly related with scheduler performance will
 	// be applied to start a scheduler, most of them are defined in `scheduler.schedulerOptions`.
-	_, podInformer := util.StartScheduler(ctx, client, cfg, config)
-	util.StartFakePVController(ctx, client)
+	_, informerFactory := util.StartScheduler(ctx, client, cfg, config)
+	util.StartFakePVController(ctx, client, informerFactory)
+	runGC := util.CreateGCController(ctx, tb, *cfg, informerFactory)
+	runNS := util.CreateNamespaceController(ctx, tb, *cfg, informerFactory)
 
-	return podInformer, client, dynClient
+	runResourceClaimController := func() {}
+	if enabledFeatures[features.DynamicResourceAllocation] {
+		// Testing of DRA with inline resource claims depends on this
+		// controller for creating and removing ResourceClaims.
+		runResourceClaimController = util.CreateResourceClaimController(ctx, tb, client, informerFactory)
+	}
+
+	informerFactory.Start(ctx.Done())
+	informerFactory.WaitForCacheSync(ctx.Done())
+	go runGC()
+	go runNS()
+	go runResourceClaimController()
+
+	return informerFactory, client, dynClient
 }
 
-// Returns the list of scheduled pods in the specified namespaces.
+// Returns the list of scheduled and unscheduled pods in the specified namespaces.
 // Note that no namespaces specified matches all namespaces.
-func getScheduledPods(podInformer coreinformers.PodInformer, namespaces ...string) ([]*v1.Pod, error) {
+func getScheduledPods(podInformer coreinformers.PodInformer, namespaces ...string) ([]*v1.Pod, []*v1.Pod, error) {
 	pods, err := podInformer.Lister().List(labels.Everything())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s := sets.New(namespaces...)
 	scheduled := make([]*v1.Pod, 0, len(pods))
+	unscheduled := make([]*v1.Pod, 0, len(pods))
 	for i := range pods {
 		pod := pods[i]
-		if len(pod.Spec.NodeName) > 0 && (len(s) == 0 || s.Has(pod.Namespace)) {
-			scheduled = append(scheduled, pod)
+		if len(s) == 0 || s.Has(pod.Namespace) {
+			if len(pod.Spec.NodeName) > 0 {
+				scheduled = append(scheduled, pod)
+			} else {
+				unscheduled = append(unscheduled, pod)
+			}
 		}
 	}
-	return scheduled, nil
+	return scheduled, unscheduled, nil
 }
 
 // DataItem is the data point.
@@ -167,6 +201,27 @@ func makeBasePod() *v1.Pod {
 }
 
 func dataItems2JSONFile(dataItems DataItems, namePrefix string) error {
+	// perfdash expects all data items to have the same set of labels.  It
+	// then renders drop-down buttons for each label with all values found
+	// for each label. If we were to store data items that don't have a
+	// certain label, then perfdash will never show those data items
+	// because it will only show data items that have the currently
+	// selected label value. To avoid that, we collect all labels used
+	// anywhere and then add missing labels with "not applicable" as value.
+	labels := sets.New[string]()
+	for _, item := range dataItems.DataItems {
+		for label := range item.Labels {
+			labels.Insert(label)
+		}
+	}
+	for _, item := range dataItems.DataItems {
+		for label := range labels {
+			if _, ok := item.Labels[label]; !ok {
+				item.Labels[label] = "not applicable"
+			}
+		}
+	}
+
 	b, err := json.Marshal(dataItems)
 	if err != nil {
 		return err
@@ -291,19 +346,21 @@ type throughputCollector struct {
 	schedulingThroughputs []float64
 	labels                map[string]string
 	namespaces            []string
+	errorMargin           float64
 }
 
-func newThroughputCollector(tb testing.TB, podInformer coreinformers.PodInformer, labels map[string]string, namespaces []string) *throughputCollector {
+func newThroughputCollector(tb testing.TB, podInformer coreinformers.PodInformer, labels map[string]string, namespaces []string, errorMargin float64) *throughputCollector {
 	return &throughputCollector{
 		tb:          tb,
 		podInformer: podInformer,
 		labels:      labels,
 		namespaces:  namespaces,
+		errorMargin: errorMargin,
 	}
 }
 
 func (tc *throughputCollector) run(ctx context.Context) {
-	podsScheduled, err := getScheduledPods(tc.podInformer, tc.namespaces...)
+	podsScheduled, _, err := getScheduledPods(tc.podInformer, tc.namespaces...)
 	if err != nil {
 		klog.Fatalf("%v", err)
 	}
@@ -320,7 +377,7 @@ func (tc *throughputCollector) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now()
-			podsScheduled, err := getScheduledPods(tc.podInformer, tc.namespaces...)
+			podsScheduled, _, err := getScheduledPods(tc.podInformer, tc.namespaces...)
 			if err != nil {
 				klog.Fatalf("%v", err)
 			}
@@ -359,7 +416,7 @@ func (tc *throughputCollector) run(ctx context.Context) {
 			throughput := float64(newScheduled) / durationInSeconds
 			expectedDuration := throughputSampleInterval * time.Duration(skipped+1)
 			errorMargin := (duration - expectedDuration).Seconds() / expectedDuration.Seconds() * 100
-			if math.Abs(errorMargin) > 5 {
+			if tc.errorMargin > 0 && math.Abs(errorMargin) > tc.errorMargin {
 				// This might affect the result, report it.
 				tc.tb.Errorf("ERROR: Expected throuput collector to sample at regular time intervals. The %d most recent intervals took %s instead of %s, a difference of %0.1f%%.", skipped+1, duration, expectedDuration, errorMargin)
 			}

@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,14 +37,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	core "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/cloud-provider/api"
 	fakecloud "k8s.io/cloud-provider/fake"
 	servicehelper "k8s.io/cloud-provider/service/helpers"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
@@ -64,13 +69,22 @@ func newService(name string, serviceType v1.ServiceType, tweaks ...serviceTweak)
 			Namespace: "default",
 		},
 		Spec: v1.ServiceSpec{
-			Type: serviceType,
+			Type:  serviceType,
+			Ports: makeServicePort(v1.ProtocolTCP, 0),
 		},
 	}
 	for _, tw := range tweaks {
 		tw(s)
 	}
 	return s
+}
+
+func copyService(oldSvc *v1.Service, tweaks ...serviceTweak) *v1.Service {
+	newSvc := oldSvc.DeepCopy()
+	for _, tw := range tweaks {
+		tw(newSvc)
+	}
+	return newSvc
 }
 
 func tweakAddETP(etpType v1.ServiceExternalTrafficPolicyType) serviceTweak {
@@ -88,7 +102,7 @@ func tweakAddLBIngress(ip string) serviceTweak {
 func makeServicePort(protocol v1.Protocol, targetPort int) []v1.ServicePort {
 	sp := v1.ServicePort{Port: 80, Protocol: protocol}
 	if targetPort > 0 {
-		sp.TargetPort = intstr.FromInt(targetPort)
+		sp.TargetPort = intstr.FromInt32(int32(targetPort))
 	}
 	return []v1.ServicePort{sp}
 }
@@ -123,7 +137,7 @@ func tweakAddAppProtocol(appProtocol string) serviceTweak {
 	}
 }
 
-func tweakAddIPFamilies(families ...v1.IPFamily) serviceTweak {
+func tweakSetIPFamilies(families ...v1.IPFamily) serviceTweak {
 	return func(s *v1.Service) {
 		s.Spec.IPFamilies = families
 	}
@@ -134,13 +148,16 @@ func defaultExternalService() *v1.Service {
 	return newService("external-balancer", v1.ServiceTypeLoadBalancer)
 }
 
-func alwaysReady() bool { return true }
-
-func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
+// newController creates a new service controller. Callers have the option to
+// specify `stopChan` for test cases which might require running the
+// node/service informers and reacting to resource events. Callers can also
+// specify `objects` which represent the initial state of objects, used to
+// populate the client set / informer cache at start-up.
+func newController(stopCh <-chan struct{}, objects ...runtime.Object) (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 	cloud := &fakecloud.Cloud{}
 	cloud.Region = region
 
-	kubeClient := fake.NewSimpleClientset()
+	kubeClient := fake.NewSimpleClientset(objects...)
 	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
 	serviceInformer := informerFactory.Core().V1().Services()
 	nodeInformer := informerFactory.Core().V1().Nodes()
@@ -150,26 +167,36 @@ func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "service-controller"})
 
 	controller := &Controller{
-		cloud:            cloud,
-		kubeClient:       kubeClient,
-		clusterName:      "test-cluster",
-		cache:            &serviceCache{serviceMap: make(map[string]*cachedService)},
-		eventBroadcaster: broadcaster,
-		eventRecorder:    recorder,
-		nodeLister:       newFakeNodeLister(nil),
-		nodeListerSynced: nodeInformer.Informer().HasSynced,
-		serviceQueue:     workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
-		nodeQueue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "node"),
-		lastSyncedNodes:  []*v1.Node{},
+		cloud:               cloud,
+		kubeClient:          kubeClient,
+		clusterName:         "test-cluster",
+		eventBroadcaster:    broadcaster,
+		eventRecorder:       recorder,
+		serviceLister:       serviceInformer.Lister(),
+		serviceListerSynced: serviceInformer.Informer().HasSynced,
+		nodeLister:          nodeInformer.Lister(),
+		nodeListerSynced:    nodeInformer.Informer().HasSynced,
+		serviceQueue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
+		nodeQueue:           workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "node"),
+		lastSyncedNodes:     make(map[string][]*v1.Node),
 	}
+
+	informerFactory.Start(stopCh)
+	informerFactory.WaitForCacheSync(stopCh)
+
+	serviceMap := make(map[string]*cachedService)
+	services, _ := serviceInformer.Lister().List(labels.Everything())
+	for _, service := range services {
+		serviceMap[service.Name] = &cachedService{
+			state: service,
+		}
+	}
+
+	controller.cache = &serviceCache{serviceMap: serviceMap}
 
 	balancer, _ := cloud.LoadBalancer()
 	controller.balancer = balancer
 
-	controller.serviceLister = serviceInformer.Lister()
-
-	controller.nodeListerSynced = alwaysReady
-	controller.serviceListerSynced = alwaysReady
 	controller.eventRecorder = record.NewFakeRecorder(100)
 
 	cloud.Calls = nil         // ignore any cloud calls made in init()
@@ -204,7 +231,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 		expectPatchFinalizer: true,
 	}, {
 		desc:                 "tcp service that wants LB",
-		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 0)),
+		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer),
 		expectOp:             ensureLoadBalancer,
 		expectCreateAttempt:  true,
 		expectPatchStatus:    true,
@@ -234,7 +261,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 		expectPatchFinalizer: true,
 	}, {
 		desc:                 "service that needs cleanup",
-		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer, tweakAddLBIngress("8.8.8.8"), tweakAddPorts(v1.ProtocolTCP, 0), tweakAddFinalizers(servicehelper.LoadBalancerCleanupFinalizer), tweakAddDeletionTimestamp(time.Now())),
+		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer, tweakAddLBIngress("8.8.8.8"), tweakAddFinalizers(servicehelper.LoadBalancerCleanupFinalizer), tweakAddDeletionTimestamp(time.Now())),
 		lbExists:             true,
 		expectOp:             deleteLoadBalancer,
 		expectDeleteAttempt:  true,
@@ -242,7 +269,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 		expectPatchFinalizer: true,
 	}, {
 		desc:                 "service with finalizer that wants LB",
-		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 0), tweakAddFinalizers(servicehelper.LoadBalancerCleanupFinalizer)),
+		service:              newService("basic-service1", v1.ServiceTypeLoadBalancer, tweakAddFinalizers(servicehelper.LoadBalancerCleanupFinalizer)),
 		expectOp:             ensureLoadBalancer,
 		expectCreateAttempt:  true,
 		expectPatchStatus:    true,
@@ -253,7 +280,7 @@ func TestSyncLoadBalancerIfNeeded(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			controller, cloud, client := newController()
+			controller, cloud, client := newController(nil)
 			cloud.Exists = tc.lbExists
 			key := fmt.Sprintf("%s/%s", tc.service.Namespace, tc.service.Name)
 			if _, err := client.CoreV1().Services(tc.service.Namespace).Create(ctx, tc.service, metav1.CreateOptions{}); err != nil {
@@ -427,7 +454,7 @@ func TestUpdateNodesInExternalLoadBalancer(t *testing.T) {
 		t.Run(item.desc, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			controller, cloud, _ := newController()
+			controller, cloud, _ := newController(nil)
 			controller.nodeLister = newFakeNodeLister(nil, nodes...)
 			if servicesToRetry := controller.updateLoadBalancerHosts(ctx, item.services, item.workers); len(servicesToRetry) != 0 {
 				t.Errorf("for case %q, unexpected servicesToRetry: %v", item.desc, servicesToRetry)
@@ -511,6 +538,8 @@ func TestNodeChangesForExternalTrafficPolicyLocalServices(t *testing.T) {
 			},
 		},
 		expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+			{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+			{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
 			{Service: service3, Hosts: []*v1.Node{node1, node3}},
 		},
 	}, {
@@ -535,6 +564,8 @@ func TestNodeChangesForExternalTrafficPolicyLocalServices(t *testing.T) {
 			},
 		},
 		expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+			{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2, node3}},
+			{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2, node3}},
 			{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
 		},
 	}, {
@@ -574,11 +605,15 @@ func TestNodeChangesForExternalTrafficPolicyLocalServices(t *testing.T) {
 		expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
 	}} {
 		t.Run(tc.desc, func(t *testing.T) {
-			controller, cloud, _ := newController()
+			controller, cloud, _ := newController(nil)
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			controller.lastSyncedNodes = tc.initialState
+			for _, svc := range services {
+				key, _ := cache.MetaNamespaceKeyFunc(svc)
+				controller.lastSyncedNodes[key] = tc.initialState
+			}
 
 			for _, state := range tc.stateChanges {
 				setupState := func() {
@@ -746,11 +781,15 @@ func TestNodeChangesForStableNodeSetEnabled(t *testing.T) {
 		expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
 	}} {
 		t.Run(tc.desc, func(t *testing.T) {
-			controller, cloud, _ := newController()
+			controller, cloud, _ := newController(nil)
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			controller.lastSyncedNodes = tc.initialState
+			for _, svc := range services {
+				key, _ := cache.MetaNamespaceKeyFunc(svc)
+				controller.lastSyncedNodes[key] = tc.initialState
+			}
 
 			for _, state := range tc.stateChanges {
 				setupState := func() {
@@ -790,7 +829,7 @@ func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
 		serviceNames.Insert(fmt.Sprintf("%s/%s", svc.GetObjectMeta().GetNamespace(), svc.GetObjectMeta().GetName()))
 	}
 
-	controller, cloud, _ := newController()
+	controller, cloud, _ := newController(nil)
 	for _, tc := range []struct {
 		desc                  string
 		nodes                 []*v1.Node
@@ -885,8 +924,92 @@ func compareUpdateCalls(t *testing.T, left, right []fakecloud.UpdateBalancerCall
 	}
 }
 
+// compareHostSets compares if the nodes in left are in right, despite the order.
+func compareHostSets(t *testing.T, left, right []*v1.Node) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for _, lHost := range left {
+		found := false
+		for _, rHost := range right {
+			if reflect.DeepEqual(lHost, rHost) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func TestNodesNotEqual(t *testing.T) {
+	controller, cloud, _ := newController(nil)
+
+	services := []*v1.Service{
+		newService("s0", v1.ServiceTypeLoadBalancer),
+		newService("s1", v1.ServiceTypeLoadBalancer),
+	}
+
+	node1 := makeNode(tweakName("node1"))
+	node2 := makeNode(tweakName("node2"))
+	node3 := makeNode(tweakName("node3"))
+	node1WithProviderID := makeNode(tweakName("node1"), tweakProviderID("cumulus/1"))
+	node2WithProviderID := makeNode(tweakName("node2"), tweakProviderID("cumulus/2"))
+
+	testCases := []struct {
+		desc                string
+		lastSyncNodes       []*v1.Node
+		newNodes            []*v1.Node
+		expectedUpdateCalls []fakecloud.UpdateBalancerCall
+	}{
+		{
+			desc:          "Nodes with updated providerID",
+			lastSyncNodes: []*v1.Node{node1, node2},
+			newNodes:      []*v1.Node{node1WithProviderID, node2WithProviderID},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: newService("s0", v1.ServiceTypeLoadBalancer), Hosts: []*v1.Node{node1WithProviderID, node2WithProviderID}},
+				{Service: newService("s1", v1.ServiceTypeLoadBalancer), Hosts: []*v1.Node{node1WithProviderID, node2WithProviderID}},
+			},
+		},
+		{
+			desc:                "Nodes unchanged",
+			lastSyncNodes:       []*v1.Node{node1WithProviderID, node2},
+			newNodes:            []*v1.Node{node1WithProviderID, node2},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+		{
+			desc:          "Change node with empty providerID",
+			lastSyncNodes: []*v1.Node{node1WithProviderID, node2},
+			newNodes:      []*v1.Node{node1WithProviderID, node3},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: newService("s0", v1.ServiceTypeLoadBalancer), Hosts: []*v1.Node{node1WithProviderID, node3}},
+				{Service: newService("s1", v1.ServiceTypeLoadBalancer), Hosts: []*v1.Node{node1WithProviderID, node3}},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			controller.nodeLister = newFakeNodeLister(nil, tc.newNodes...)
+
+			for _, svc := range services {
+				key, _ := cache.MetaNamespaceKeyFunc(svc)
+				controller.lastSyncedNodes[key] = tc.lastSyncNodes
+			}
+
+			controller.updateLoadBalancerHosts(ctx, services, 5)
+			compareUpdateCalls(t, tc.expectedUpdateCalls, cloud.UpdateCalls)
+			cloud.UpdateCalls = []fakecloud.UpdateBalancerCall{}
+		})
+	}
+}
+
 func TestProcessServiceCreateOrUpdate(t *testing.T) {
-	controller, _, client := newController()
+	controller, _, client := newController(nil)
 
 	//A pair of old and new loadbalancer IP address
 	oldLBIP := "192.168.1.1"
@@ -1001,7 +1124,7 @@ func TestProcessServiceCreateOrUpdateK8sError(t *testing.T) {
 			svc := newService(svcName, v1.ServiceTypeLoadBalancer)
 			// Preset finalizer so k8s error only happens when patching status.
 			svc.Finalizers = []string{servicehelper.LoadBalancerCleanupFinalizer}
-			controller, _, client := newController()
+			controller, _, client := newController(nil)
 			client.PrependReactor("patch", "services", func(action core.Action) (bool, runtime.Object, error) {
 				return true, nil, tc.k8sErr
 			})
@@ -1045,7 +1168,7 @@ func TestSyncService(t *testing.T) {
 			testName: "if an invalid service name is synced",
 			key:      "invalid/key/string",
 			updateFn: func() {
-				controller, _, _ = newController()
+				controller, _, _ = newController(nil)
 			},
 			expectedFn: func(e error) error {
 				//TODO: should find a way to test for dependent package errors in such a way that it won't break
@@ -1077,7 +1200,7 @@ func TestSyncService(t *testing.T) {
 			key:      "external-balancer",
 			updateFn: func() {
 				testSvc := defaultExternalService()
-				controller, _, _ = newController()
+				controller, _, _ = newController(nil)
 				controller.enqueueService(testSvc)
 				svc := controller.cache.getOrCreate("external-balancer")
 				svc.state = testSvc
@@ -1093,22 +1216,24 @@ func TestSyncService(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		t.Run(tc.testName, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		tc.updateFn()
-		obtainedErr := controller.syncService(ctx, tc.key)
+			tc.updateFn()
+			obtainedErr := controller.syncService(ctx, tc.key)
 
-		//expected matches obtained ??.
-		if exp := tc.expectedFn(obtainedErr); exp != nil {
-			t.Errorf("%v Error:%v", tc.testName, exp)
-		}
+			//expected matches obtained ??.
+			if exp := tc.expectedFn(obtainedErr); exp != nil {
+				t.Errorf("%v Error:%v", tc.testName, exp)
+			}
 
-		//Post processing, the element should not be in the sync queue.
-		_, exist := controller.cache.get(tc.key)
-		if exist {
-			t.Fatalf("%v working Queue should be empty, but contains %s", tc.testName, tc.key)
-		}
+			//Post processing, the element should not be in the sync queue.
+			_, exist := controller.cache.get(tc.key)
+			if exist {
+				t.Fatalf("%v working Queue should be empty, but contains %s", tc.testName, tc.key)
+			}
+		})
 	}
 }
 
@@ -1181,7 +1306,7 @@ func TestProcessServiceDeletion(t *testing.T) {
 		defer cancel()
 
 		//Create a new controller.
-		controller, cloud, _ = newController()
+		controller, cloud, _ = newController(nil)
 		tc.updateFn(controller)
 		obtainedErr := controller.processServiceDeletion(ctx, svcKey)
 		if err := tc.expectedFn(obtainedErr); err != nil {
@@ -1256,8 +1381,105 @@ func TestNeedsCleanup(t *testing.T) {
 
 }
 
-func TestNeedsUpdate(t *testing.T) {
+// This tests a service update while a slow node sync is happening. If we have multiple
+// services to process from a node sync: each service will experience a sync delta.
+// If a new Node is added and a service is synced while this happens: we want to
+// make sure that the slow node sync never removes the Node from LB set because it
+// has stale data.
+func TestSlowNodeSync(t *testing.T) {
+	stopCh, syncServiceDone, syncService := make(chan struct{}), make(chan string), make(chan string)
+	defer close(stopCh)
+	defer close(syncService)
 
+	node1 := makeNode(tweakName("node1"))
+	node2 := makeNode(tweakName("node2"))
+	node3 := makeNode(tweakName("node3"))
+	service1 := newService("service1", v1.ServiceTypeLoadBalancer)
+	service2 := newService("service2", v1.ServiceTypeLoadBalancer)
+
+	sKey1, _ := cache.MetaNamespaceKeyFunc(service1)
+	sKey2, _ := cache.MetaNamespaceKeyFunc(service2)
+	serviceKeys := sets.New(sKey1, sKey2)
+
+	controller, cloudProvider, kubeClient := newController(stopCh, node1, node2, service1, service2)
+	cloudProvider.UpdateCallCb = func(update fakecloud.UpdateBalancerCall) {
+		key, _ := cache.MetaNamespaceKeyFunc(update.Service)
+		impactedService := serviceKeys.Difference(sets.New(key)).UnsortedList()[0]
+		syncService <- impactedService
+		<-syncServiceDone
+
+	}
+	cloudProvider.EnsureCallCb = func(update fakecloud.UpdateBalancerCall) {
+		syncServiceDone <- update.Service.Name
+	}
+	// Two update calls are expected. This is because this test calls
+	// controller.syncNodes once with two existing services, but with one
+	// controller.syncService while that is happening. The end result is
+	// therefore two update calls - since the second controller.syncNodes won't
+	// trigger an update call because the syncService already did. Each update
+	// call takes cloudProvider.RequestDelay to process. The test asserts that
+	// the order of the Hosts defined by the update calls is respected, but
+	// doesn't necessarily assert the order of the Service. This is because the
+	// controller implementation doesn't use a deterministic order when syncing
+	// services. The test therefor works out which service is impacted by the
+	// slow node sync (which will be whatever service is not synced first) and
+	// then validates that the Hosts for each update call is respected.
+	expectedUpdateCalls := []fakecloud.UpdateBalancerCall{
+		// First update call for first service from controller.syncNodes
+		{Service: service1, Hosts: []*v1.Node{node1, node2}},
+	}
+	expectedEnsureCalls := []fakecloud.UpdateBalancerCall{
+		// Second update call for impacted service from controller.syncService
+		{Service: service2, Hosts: []*v1.Node{node1, node2, node3}},
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		controller.syncNodes(context.TODO(), 1)
+	}()
+
+	key := <-syncService
+	if _, err := kubeClient.CoreV1().Nodes().Create(context.TODO(), node3, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("error creating node3, err: %v", err)
+	}
+
+	// Allow a bit of time for the informer cache to get populated with the new
+	// node
+	if err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), 10*time.Millisecond, true, func(ctx context.Context) (done bool, err error) {
+		n3, _ := controller.nodeLister.Get("node3")
+		return n3 != nil, nil
+	}); err != nil {
+		t.Fatalf("informer cache was never populated with node3")
+	}
+
+	// Sync the service
+	if err := controller.syncService(context.TODO(), key); err != nil {
+		t.Fatalf("unexpected service sync error, err: %v", err)
+	}
+
+	wg.Wait()
+
+	if len(expectedUpdateCalls) != len(cloudProvider.UpdateCalls) {
+		t.Fatalf("unexpected amount of update calls, expected: %v, got: %v", len(expectedUpdateCalls), len(cloudProvider.UpdateCalls))
+	}
+	for idx, update := range cloudProvider.UpdateCalls {
+		if !compareHostSets(t, expectedUpdateCalls[idx].Hosts, update.Hosts) {
+			t.Fatalf("unexpected updated hosts for update: %v, expected: %v, got: %v", idx, expectedUpdateCalls[idx].Hosts, update.Hosts)
+		}
+	}
+	if len(expectedEnsureCalls) != len(cloudProvider.EnsureCalls) {
+		t.Fatalf("unexpected amount of ensure calls, expected: %v, got: %v", len(expectedEnsureCalls), len(cloudProvider.EnsureCalls))
+	}
+	for idx, ensure := range cloudProvider.EnsureCalls {
+		if !compareHostSets(t, expectedEnsureCalls[idx].Hosts, ensure.Hosts) {
+			t.Fatalf("unexpected updated hosts for ensure: %v, expected: %v, got: %v", idx, expectedEnsureCalls[idx].Hosts, ensure.Hosts)
+		}
+	}
+}
+
+func TestNeedsUpdate(t *testing.T) {
 	testCases := []struct {
 		testName            string                            //Name of the test case
 		updateFn            func() (*v1.Service, *v1.Service) //Function to update the service object
@@ -1354,8 +1576,7 @@ func TestNeedsUpdate(t *testing.T) {
 		testName: "If TargetGroup is different 1",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
 			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 20))
-			newSvc = oldSvc.DeepCopy()
-			newSvc.Spec.Ports[0].TargetPort = intstr.Parse("21")
+			newSvc = copyService(oldSvc, tweakAddPorts(v1.ProtocolTCP, 21))
 			return
 		},
 		expectedNeedsUpdate: true,
@@ -1371,60 +1592,54 @@ func TestNeedsUpdate(t *testing.T) {
 	}, {
 		testName: "If appProtocol is the same",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22))
-			newSvc = oldSvc.DeepCopy()
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer)
+			newSvc = copyService(oldSvc)
 			return
 		},
 		expectedNeedsUpdate: false,
 	}, {
 		testName: "If service IPFamilies from single stack to dual stack",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22), tweakAddAppProtocol("http"), tweakAddIPFamilies(v1.IPv4Protocol))
-			newSvc = oldSvc.DeepCopy()
-			newSvc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakSetIPFamilies(v1.IPv4Protocol))
+			newSvc = copyService(oldSvc, tweakSetIPFamilies(v1.IPv4Protocol, v1.IPv6Protocol))
 			return
 		},
 		expectedNeedsUpdate: true,
 	}, {
 		testName: "If service IPFamilies from dual stack to single stack",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22), tweakAddAppProtocol("http"), tweakAddIPFamilies(v1.IPv4Protocol, v1.IPv6Protocol))
-			newSvc = oldSvc.DeepCopy()
-			newSvc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakSetIPFamilies(v1.IPv4Protocol, v1.IPv6Protocol))
+			newSvc = copyService(oldSvc, tweakSetIPFamilies(v1.IPv4Protocol))
 			return
 		},
 		expectedNeedsUpdate: true,
 	}, {
 		testName: "If service IPFamilies not change",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22), tweakAddAppProtocol("http"), tweakAddIPFamilies(v1.IPv4Protocol))
-			newSvc = oldSvc.DeepCopy()
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakSetIPFamilies(v1.IPv4Protocol))
+			newSvc = copyService(oldSvc)
 			return
 		},
 		expectedNeedsUpdate: false,
 	}, {
 		testName: "If appProtocol is set when previously unset",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22))
-			newSvc = oldSvc.DeepCopy()
-			protocol := "http"
-			newSvc.Spec.Ports[0].AppProtocol = &protocol
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer)
+			newSvc = copyService(oldSvc, tweakAddAppProtocol("http"))
 			return
 		},
 		expectedNeedsUpdate: true,
 	}, {
 		testName: "If appProtocol is set to a different value",
 		updateFn: func() (oldSvc *v1.Service, newSvc *v1.Service) {
-			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddPorts(v1.ProtocolTCP, 22), tweakAddAppProtocol("http"))
-			newSvc = oldSvc.DeepCopy()
-			newProtocol := "tcp"
-			newSvc.Spec.Ports[0].AppProtocol = &newProtocol
+			oldSvc = newService("tcp-service", v1.ServiceTypeLoadBalancer, tweakAddAppProtocol("http"))
+			newSvc = copyService(oldSvc, tweakAddAppProtocol("tcp"))
 			return
 		},
 		expectedNeedsUpdate: true,
 	}}
 
-	controller, _, _ := newController()
+	controller, _, _ := newController(nil)
 	for _, tc := range testCases {
 		oldSvc, newSvc := tc.updateFn()
 		obtainedResult := controller.needsUpdate(oldSvc, newSvc)
@@ -1749,7 +1964,7 @@ func Test_respectsPredicates(t *testing.T) {
 	}{
 		{want: false, input: &v1.Node{}},
 		{want: true, input: &v1.Node{Spec: v1.NodeSpec{ProviderID: providerID}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
-		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
+		{want: true, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
 		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionFalse}}}}},
 		{want: true, input: &v1.Node{Spec: v1.NodeSpec{ProviderID: providerID}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}}}},
 		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{v1.LabelNodeExcludeBalancers: ""}}}},
@@ -1927,9 +2142,9 @@ func tweakDeleted() nodeTweak {
 	}
 }
 
-func tweakUnsetProviderID() nodeTweak {
+func tweakProviderID(id string) nodeTweak {
 	return func(n *v1.Node) {
-		n.Spec.ProviderID = ""
+		n.Spec.ProviderID = id
 	}
 }
 
@@ -2092,13 +2307,35 @@ func Test_shouldSyncUpdatedNode_individualPredicates(t *testing.T) {
 		stableNodeSetEnabled: true,
 	}, {
 		name:       "providerID set F -> T",
-		oldNode:    makeNode(tweakUnsetProviderID()),
+		oldNode:    makeNode(tweakProviderID("")),
 		newNode:    makeNode(),
 		shouldSync: true,
 	}, {
 		name:                 "providerID set F -> T",
-		oldNode:              makeNode(tweakUnsetProviderID()),
+		oldNode:              makeNode(tweakProviderID("")),
 		newNode:              makeNode(),
+		shouldSync:           true,
+		stableNodeSetEnabled: true,
+	}, {
+		name:       "providerID set T-> F",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakProviderID("")),
+		shouldSync: true,
+	}, {
+		name:                 "providerID set T-> F",
+		oldNode:              makeNode(),
+		newNode:              makeNode(tweakProviderID("")),
+		shouldSync:           true,
+		stableNodeSetEnabled: true,
+	}, {
+		name:       "providerID change",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakProviderID(providerID + "-2")),
+		shouldSync: true,
+	}, {
+		name:                 "providerID change",
+		oldNode:              makeNode(),
+		newNode:              makeNode(tweakProviderID(providerID + "-2")),
 		shouldSync:           true,
 		stableNodeSetEnabled: true,
 	}}
@@ -2114,142 +2351,294 @@ func Test_shouldSyncUpdatedNode_individualPredicates(t *testing.T) {
 }
 
 func Test_shouldSyncUpdatedNode_compoundedPredicates(t *testing.T) {
+	type testCase struct {
+		name       string
+		oldNode    *v1.Node
+		newNode    *v1.Node
+		shouldSync bool
+		fgEnabled  bool
+	}
+	testcases := []testCase{}
 	for _, fgEnabled := range []bool{true, false} {
-		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StableLoadBalancerNodeSet, fgEnabled)()
-		testcases := []struct {
-			name       string
-			oldNode    *v1.Node
-			newNode    *v1.Node
-			shouldSync bool
-		}{{
-			name:       "tainted T, excluded F->T",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			shouldSync: true,
-		}, {
-			name:       "tainted T, excluded T->F",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
-			shouldSync: true,
-		}, {
-			name:       "tainted T, providerID set F->T",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakUnsetProviderID()),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
-			shouldSync: true,
-		}, {
-			name:       "tainted T, providerID set T->F",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakUnsetProviderID()),
-			shouldSync: true,
-		}, {
-			name:       "tainted T, ready F->T",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+		testcases = append(testcases, []testCase{
+			{
+				name:       "tainted T, excluded F->T",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, excluded T->F",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, providerID set F->T",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakProviderID("")),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, providerID set T->F",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakProviderID("")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, providerID change",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakProviderID(providerID+"-2")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, ready F->T",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "tainted T, ready T->F",
+				oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, tainted F->T",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, tainted T->F",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, ready F->T",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, ready T->F",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, providerID set F->T",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakProviderID("")),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, providerID set T->F",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakProviderID("")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "excluded T, providerID change",
+				oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakProviderID(providerID+"-2")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, tainted F->T",
+				oldNode:    makeNode(tweakSetReady(false)),
+				newNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, tainted T->F",
+				oldNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
+				newNode:    makeNode(tweakSetReady(false)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, excluded F->T",
+				oldNode:    makeNode(tweakSetReady(false)),
+				newNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, excluded T->F",
+				oldNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakSetReady(false)),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, providerID set F->T",
+				oldNode:    makeNode(tweakSetReady(false), tweakProviderID("")),
+				newNode:    makeNode(tweakSetReady(false)),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, providerID set T->F",
+				oldNode:    makeNode(tweakSetReady(false)),
+				newNode:    makeNode(tweakSetReady(false), tweakProviderID("")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "ready F, providerID change",
+				oldNode:    makeNode(tweakSetReady(false)),
+				newNode:    makeNode(tweakSetReady(false), tweakProviderID(providerID+"-2")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "providerID unset, excluded F->T",
+				oldNode:    makeNode(tweakProviderID("")),
+				newNode:    makeNode(tweakProviderID(""), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "providerID unset, excluded T->F",
+				oldNode:    makeNode(tweakProviderID(""), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+				newNode:    makeNode(tweakProviderID("")),
+				shouldSync: true,
+				fgEnabled:  fgEnabled,
+			}, {
+				name:       "providerID unset, ready T->F",
+				oldNode:    makeNode(tweakProviderID("")),
+				newNode:    makeNode(tweakProviderID(""), tweakSetReady(true)),
+				shouldSync: false,
+				fgEnabled:  fgEnabled,
+			},
+		}...)
+	}
+	testcases = append(testcases, []testCase{
+		{
+			name:       "providerID unset, ready F->T",
+			oldNode:    makeNode(tweakProviderID("")),
+			newNode:    makeNode(tweakProviderID(""), tweakSetReady(false)),
 			shouldSync: false,
-		}, {
-			name:       "tainted T, ready T->F",
-			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
-			shouldSync: false,
-		}, {
-			name:       "excluded T, tainted F->T",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
-			shouldSync: false,
-		}, {
-			name:       "excluded T, tainted T->F",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			shouldSync: false,
-		}, {
-			name:       "excluded T, ready F->T",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			shouldSync: false,
-		}, {
-			name:       "excluded T, ready T->F",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
-			shouldSync: false,
-		}, {
-			name:       "excluded T, providerID set F->T",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakUnsetProviderID()),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			fgEnabled:  true,
+		},
+		{
+			name:       "providerID unset, ready F->T",
+			oldNode:    makeNode(tweakProviderID("")),
+			newNode:    makeNode(tweakProviderID(""), tweakSetReady(false)),
 			shouldSync: true,
-		}, {
-			name:       "excluded T, providerID set T->F",
-			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakUnsetProviderID()),
-			shouldSync: true,
-		}, {
-			name:       "ready F, tainted F->T",
-			oldNode:    makeNode(tweakSetReady(false)),
-			newNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
-			shouldSync: false,
-		}, {
-			name:       "ready F, tainted T->F",
-			oldNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakSetReady(false)),
-			shouldSync: false,
-		}, {
-			name:       "ready F, excluded F->T",
-			oldNode:    makeNode(tweakSetReady(false)),
-			newNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			shouldSync: true,
-		}, {
-			name:       "ready F, excluded T->F",
-			oldNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakSetReady(false)),
-			shouldSync: true,
-		}, {
-			name:       "ready F, providerID set F->T",
-			oldNode:    makeNode(tweakSetReady(false), tweakUnsetProviderID()),
-			newNode:    makeNode(tweakSetReady(false)),
-			shouldSync: true,
-		}, {
-			name:       "ready F, providerID set T->F",
-			oldNode:    makeNode(tweakSetReady(false)),
-			newNode:    makeNode(tweakSetReady(false), tweakUnsetProviderID()),
-			shouldSync: true,
-		}, {
-			name:       "providerID unset, tainted F->T",
-			oldNode:    makeNode(tweakUnsetProviderID()),
-			newNode:    makeNode(tweakUnsetProviderID(), tweakAddTaint(ToBeDeletedTaint)),
-			shouldSync: false,
+			fgEnabled:  false,
 		}, {
 			name:       "providerID unset, tainted T->F",
-			oldNode:    makeNode(tweakUnsetProviderID(), tweakAddTaint(ToBeDeletedTaint)),
-			newNode:    makeNode(tweakUnsetProviderID()),
+			oldNode:    makeNode(tweakProviderID(""), tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakProviderID("")),
 			shouldSync: false,
-		}, {
-			name:       "providerID unset, excluded F->T",
-			oldNode:    makeNode(tweakUnsetProviderID()),
-			newNode:    makeNode(tweakUnsetProviderID(), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			fgEnabled:  true,
+		},
+		{
+			name:       "providerID unset, tainted T->F",
+			oldNode:    makeNode(tweakProviderID(""), tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakProviderID("")),
 			shouldSync: true,
+			fgEnabled:  false,
 		}, {
-			name:       "providerID unset, excluded T->F",
-			oldNode:    makeNode(tweakUnsetProviderID(), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
-			newNode:    makeNode(tweakUnsetProviderID()),
+			name:       "providerID unset, tainted F->T",
+			oldNode:    makeNode(tweakProviderID("")),
+			newNode:    makeNode(tweakProviderID(""), tweakAddTaint(ToBeDeletedTaint)),
+			shouldSync: false,
+			fgEnabled:  true,
+		}, {
+			name:       "providerID unset, tainted F->T",
+			oldNode:    makeNode(tweakProviderID("")),
+			newNode:    makeNode(tweakProviderID(""), tweakAddTaint(ToBeDeletedTaint)),
 			shouldSync: true,
-		}, {
-			name:       "providerID unset, ready F->T",
-			oldNode:    makeNode(tweakUnsetProviderID()),
-			newNode:    makeNode(tweakUnsetProviderID(), tweakSetReady(false)),
-			shouldSync: false,
-		}, {
-			name:       "providerID unset, ready T->F",
-			oldNode:    makeNode(tweakUnsetProviderID()),
-			newNode:    makeNode(tweakUnsetProviderID(), tweakSetReady(true)),
-			shouldSync: false,
-		}}
-		for _, testcase := range testcases {
-			t.Run(fmt.Sprintf("%s - StableLoadBalancerNodeSet: %v", testcase.name, fgEnabled), func(t *testing.T) {
-				shouldSync := shouldSyncUpdatedNode(testcase.oldNode, testcase.newNode)
-				if shouldSync != testcase.shouldSync {
-					t.Errorf("unexpected result from shouldSyncNode, expected: %v, actual: %v", testcase.shouldSync, shouldSync)
+			fgEnabled:  false,
+		},
+	}...)
+	for _, testcase := range testcases {
+		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StableLoadBalancerNodeSet, testcase.fgEnabled)()
+		t.Run(fmt.Sprintf("%s - StableLoadBalancerNodeSet: %v", testcase.name, testcase.fgEnabled), func(t *testing.T) {
+			shouldSync := shouldSyncUpdatedNode(testcase.oldNode, testcase.newNode)
+			if shouldSync != testcase.shouldSync {
+				t.Errorf("unexpected result from shouldSyncNode, expected: %v, actual: %v", testcase.shouldSync, shouldSync)
+			}
+		})
+	}
+
+}
+
+func TestServiceQueueDelay(t *testing.T) {
+	const ns = metav1.NamespaceDefault
+
+	tests := []struct {
+		name           string
+		lbCloudErr     error
+		wantRetryDelay time.Duration
+	}{
+		{
+			name:       "processing successful",
+			lbCloudErr: nil,
+		},
+		{
+			name:       "regular error",
+			lbCloudErr: errors.New("something went wrong"),
+		},
+		{
+			name:           "retry error",
+			lbCloudErr:     api.NewRetryError("LB create in progress", 42*time.Second),
+			wantRetryDelay: 42 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			controller, cloud, client := newController(nil)
+			queue := &spyWorkQueue{RateLimitingInterface: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "test-service-queue-delay")}
+			controller.serviceQueue = queue
+			cloud.Err = tc.lbCloudErr
+
+			serviceCache := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+			controller.serviceLister = corelisters.NewServiceLister(serviceCache)
+
+			svc := defaultExternalService()
+			if err := serviceCache.Add(svc); err != nil {
+				t.Fatalf("adding service %s to cache: %s", svc.Name, err)
+			}
+
+			ctx := context.Background()
+			_, err := client.CoreV1().Services(ns).Create(ctx, svc, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			key, err := cache.MetaNamespaceKeyFunc(svc)
+			if err != nil {
+				t.Fatalf("creating meta namespace key: %s", err)
+			}
+			queue.Add(key)
+
+			done := controller.processNextServiceItem(ctx)
+			if !done {
+				t.Fatal("processNextServiceItem stopped prematurely")
+			}
+
+			// Expect no requeues unless we hit an error that is not a retry
+			// error.
+			wantNumRequeues := 0
+			var re *api.RetryError
+			isRetryError := errors.As(tc.lbCloudErr, &re)
+			if tc.lbCloudErr != nil && !isRetryError {
+				wantNumRequeues = 1
+			}
+
+			if gotNumRequeues := queue.NumRequeues(key); gotNumRequeues != wantNumRequeues {
+				t.Fatalf("got %d requeue(s), want %d", gotNumRequeues, wantNumRequeues)
+			}
+
+			if tc.wantRetryDelay > 0 {
+				items := queue.getItems()
+				if len(items) != 1 {
+					t.Fatalf("got %d item(s), want 1", len(items))
 				}
-			})
-		}
+				if gotDelay := items[0].Delay; gotDelay != tc.wantRetryDelay {
+					t.Fatalf("got delay %s, want %s", gotDelay, tc.wantRetryDelay)
+				}
+			}
+		})
 	}
 }
 
@@ -2280,4 +2669,34 @@ func (l *fakeNodeLister) Get(name string) (*v1.Node, error) {
 		}
 	}
 	return nil, nil
+}
+
+// spyWorkQueue implements a work queue and adds the ability to inspect processed
+// items for testing purposes.
+type spyWorkQueue struct {
+	workqueue.RateLimitingInterface
+	items []spyQueueItem
+}
+
+// spyQueueItem represents an item that was being processed.
+type spyQueueItem struct {
+	Key interface{}
+	// Delay represents the delayed duration if and only if AddAfter was invoked.
+	Delay time.Duration
+}
+
+// AddAfter is like workqueue.RateLimitingInterface.AddAfter but records the
+// added key and delay internally.
+func (f *spyWorkQueue) AddAfter(key interface{}, delay time.Duration) {
+	f.items = append(f.items, spyQueueItem{
+		Key:   key,
+		Delay: delay,
+	})
+
+	f.RateLimitingInterface.AddAfter(key, delay)
+}
+
+// getItems returns all items that were recorded.
+func (f *spyWorkQueue) getItems() []spyQueueItem {
+	return f.items
 }

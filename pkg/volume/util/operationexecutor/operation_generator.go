@@ -506,9 +506,13 @@ func (og *operationGenerator) GenerateDetachVolumeFunc(
 		migrated := getMigratedStatusBySpec(volumeToDetach.VolumeSpec)
 
 		if err != nil {
-			// On failure, add volume back to ReportAsAttached list
-			actualStateOfWorld.AddVolumeToReportAsAttached(
-				logger, volumeToDetach.VolumeName, volumeToDetach.NodeName)
+			// On failure, mark the volume as uncertain. Attach() must succeed before adding the volume back
+			// to node status as attached.
+			uncertainError := actualStateOfWorld.MarkVolumeAsUncertain(
+				logger, volumeToDetach.VolumeName, volumeToDetach.VolumeSpec, volumeToDetach.NodeName)
+			if uncertainError != nil {
+				klog.Errorf("DetachVolume.MarkVolumeAsUncertain failed to add the volume %q to actual state after detach error: %s", volumeToDetach.VolumeName, uncertainError)
+			}
 			eventErr, detailedErr := volumeToDetach.GenerateError("DetachVolume.Detach failed", err)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
 		}
@@ -576,8 +580,7 @@ func (og *operationGenerator) GenerateMountVolumeFunc(
 		}
 
 		// Enforce ReadWriteOncePod access mode if it is the only one present. This is also enforced during scheduling.
-		if utilfeature.DefaultFeatureGate.Enabled(features.ReadWriteOncePod) &&
-			actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
+		if actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
 			// Because we do not know what access mode the pod intends to use if there are multiple.
 			len(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes) == 1 &&
 			v1helper.ContainsAccessMode(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes, v1.ReadWriteOncePod) {
@@ -1067,8 +1070,7 @@ func (og *operationGenerator) GenerateMapVolumeFunc(
 		migrated := getMigratedStatusBySpec(volumeToMount.VolumeSpec)
 
 		// Enforce ReadWriteOncePod access mode. This is also enforced during scheduling.
-		if utilfeature.DefaultFeatureGate.Enabled(features.ReadWriteOncePod) &&
-			actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
+		if actualStateOfWorld.IsVolumeMountedElsewhere(volumeToMount.VolumeName, volumeToMount.PodName) &&
 			// Because we do not know what access mode the pod intends to use if there are multiple.
 			len(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes) == 1 &&
 			v1helper.ContainsAccessMode(volumeToMount.VolumeSpec.PersistentVolume.Spec.AccessModes, v1.ReadWriteOncePod) {
@@ -1781,12 +1783,14 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		resizeCalled: false,
 	}
 
-	// by default we are expanding to full-fill size requested in pvc.Spec.Resources
+	// by default we are expanding to fulfill size requested in pvc.Spec.Resources
 	newSize := pvcSpecSize
-	resizeStatus := v1.PersistentVolumeClaimNoExpansionInProgress
-	if pvc.Status.ResizeStatus != nil {
-		resizeStatus = *pvc.Status.ResizeStatus
+
+	var resizeStatus v1.ClaimResourceStatus
+	if status, ok := pvc.Status.AllocatedResourceStatuses[v1.ResourceStorage]; ok {
+		resizeStatus = status
 	}
+
 	var allocatedSize *resource.Quantity
 	t, ok := pvc.Status.AllocatedResources[v1.ResourceStorage]
 	if ok {
@@ -1798,10 +1802,10 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		// pv is not of requested size yet and hence will require expanding
 
 		switch resizeStatus {
-		case v1.PersistentVolumeClaimControllerExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionPending:
-		case v1.PersistentVolumeClaimNodeExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionFailed:
+		case v1.PersistentVolumeClaimControllerResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizePending,
+			v1.PersistentVolumeClaimNodeResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizeFailed:
 			if allocatedSize != nil {
 				newSize = *allocatedSize
 			}
@@ -1820,30 +1824,29 @@ func (og *operationGenerator) expandAndRecoverFunction(resizeOpts inTreeResizeOp
 		//      safe to do so.
 		//   4. While expansion was still pending on the node, user reduced the pvc size.
 		switch resizeStatus {
-		case v1.PersistentVolumeClaimNodeExpansionInProgress:
-		case v1.PersistentVolumeClaimNodeExpansionPending:
+		case v1.PersistentVolumeClaimNodeResizeInProgress,
+			v1.PersistentVolumeClaimNodeResizePending:
 			// we don't need to do any work. We could be here because of a spurious update event.
 			// This is case #1
 			return resizeResponse
-		case v1.PersistentVolumeClaimNodeExpansionFailed:
+		case v1.PersistentVolumeClaimNodeResizeFailed:
 			// This is case#3
 			pvc, err = og.markForPendingNodeExpansion(pvc, pv)
 			resizeResponse.pvc = pvc
 			resizeResponse.err = err
 			return resizeResponse
-		case v1.PersistentVolumeClaimControllerExpansionInProgress:
-		case v1.PersistentVolumeClaimControllerExpansionFailed:
-		case v1.PersistentVolumeClaimNoExpansionInProgress:
+		case v1.PersistentVolumeClaimControllerResizeInProgress,
+			v1.PersistentVolumeClaimControllerResizeFailed:
 			// This is case#2 or it could also be case#4 when user manually shrunk the PVC
 			// after expanding it.
 			if allocatedSize != nil {
 				newSize = *allocatedSize
 			}
 		default:
-			// It is impossible for ResizeStatus to be nil and allocatedSize to be not nil but somehow
+			// It is impossible for ResizeStatus to be "" and allocatedSize to be not nil but somehow
 			// if we do end up in this state, it is safest to resume expansion to last recorded size in
 			// allocatedSize variable.
-			if pvc.Status.ResizeStatus == nil && allocatedSize != nil {
+			if resizeStatus == "" && allocatedSize != nil {
 				newSize = *allocatedSize
 			} else {
 				newSize = pvcSpecSize
@@ -1938,7 +1941,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 		var eventErr, detailedErr error
 		migrated := false
 
-		if currentSize.IsZero() || volumeToMount.PersistentVolumeSize.IsZero() {
+		if currentSize.IsZero() || volumeToMount.DesiredPersistentVolumeSize.IsZero() {
 			err := fmt.Errorf("current or new size of the volume is not set")
 			eventErr, detailedErr = volumeToMount.GenerateError("NodeExpandvolume.expansion failed", err)
 			return volumetypes.NewOperationContext(eventErr, detailedErr, migrated)
@@ -1948,7 +1951,7 @@ func (og *operationGenerator) GenerateExpandInUseVolumeFunc(
 			VolumeSpec: volumeToMount.VolumeSpec,
 			DevicePath: volumeToMount.DevicePath,
 			OldSize:    currentSize,
-			NewSize:    volumeToMount.PersistentVolumeSize,
+			NewSize:    volumeToMount.DesiredPersistentVolumeSize,
 		}
 		fsVolume, err := util.CheckVolumeModeFilesystem(volumeToMount.VolumeSpec)
 		if err != nil {
@@ -2168,7 +2171,7 @@ func (og *operationGenerator) nodeExpandVolume(
 }
 
 func (og *operationGenerator) checkForRecoveryFromExpansion(pvc *v1.PersistentVolumeClaim, volumeToMount VolumeToMount) bool {
-	resizeStatus := pvc.Status.ResizeStatus
+	resizeStatus := pvc.Status.AllocatedResourceStatuses[v1.ResourceStorage]
 	allocatedResource := pvc.Status.AllocatedResources
 	featureGateStatus := utilfeature.DefaultFeatureGate.Enabled(features.RecoverVolumeExpansionFailure)
 
@@ -2179,7 +2182,7 @@ func (og *operationGenerator) checkForRecoveryFromExpansion(pvc *v1.PersistentVo
 	// Even though RecoverVolumeExpansionFailure feature gate is enabled, it appears that we are running with older version
 	// of resize controller, which will not populate allocatedResource and resizeStatus. This can happen because of version skew
 	// and hence we are going to keep expanding using older logic.
-	if resizeStatus == nil && allocatedResource == nil {
+	if resizeStatus == "" && allocatedResource == nil {
 		_, detailedMsg := volumeToMount.GenerateMsg("MountVolume.NodeExpandVolume running with", "older external resize controller")
 		klog.Warningf(detailedMsg)
 		return false

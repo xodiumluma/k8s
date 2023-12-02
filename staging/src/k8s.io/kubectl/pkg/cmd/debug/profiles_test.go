@@ -347,6 +347,8 @@ func TestRestrictedProfile(t *testing.T) {
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -386,6 +388,8 @@ func TestRestrictedProfile(t *testing.T) {
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -404,6 +408,8 @@ func TestRestrictedProfile(t *testing.T) {
 								Capabilities: &corev1.Capabilities{
 									Add: []corev1.Capability{"ALL"},
 								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -423,6 +429,8 @@ func TestRestrictedProfile(t *testing.T) {
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -487,7 +495,7 @@ func TestNetAdminProfile(t *testing.T) {
 							Name: "dbg", Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN"},
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
@@ -518,6 +526,7 @@ func TestNetAdminProfile(t *testing.T) {
 			expectPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "podcopy"},
 				Spec: corev1.PodSpec{
+					ShareProcessNamespace: pointer.Bool(true),
 					Containers: []corev1.Container{
 						{Name: "app", Image: "appimage"},
 						{
@@ -525,7 +534,7 @@ func TestNetAdminProfile(t *testing.T) {
 							Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN"},
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
@@ -564,6 +573,7 @@ func TestNetAdminProfile(t *testing.T) {
 			expectPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "podcopy"},
 				Spec: corev1.PodSpec{
+					ShareProcessNamespace: pointer.Bool(true),
 					Containers: []corev1.Container{
 						{Name: "app", Image: "appimage"},
 						{
@@ -571,7 +581,7 @@ func TestNetAdminProfile(t *testing.T) {
 							Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"SYS_PTRACE", "NET_ADMIN"},
+									Add: []corev1.Capability{"SYS_PTRACE", "NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
@@ -602,9 +612,8 @@ func TestNetAdminProfile(t *testing.T) {
 							Name:  "dbg",
 							Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: pointer.BoolPtr(true),
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN"},
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
@@ -622,7 +631,6 @@ func TestNetAdminProfile(t *testing.T) {
 							Name:  "dbg",
 							Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: pointer.BoolPtr(true),
 								Capabilities: &corev1.Capabilities{
 									Add: []corev1.Capability{"SYS_PTRACE"},
 								},
@@ -644,9 +652,8 @@ func TestNetAdminProfile(t *testing.T) {
 							Name:  "dbg",
 							Image: "dbgimage",
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: pointer.BoolPtr(true),
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"SYS_PTRACE", "NET_ADMIN"},
+									Add: []corev1.Capability{"SYS_PTRACE", "NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},

@@ -24,10 +24,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	v1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/bootstraptoken/v1"
+	bootstraptokenv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/bootstraptoken/v1"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
@@ -81,7 +82,7 @@ func TestNewInitData(t *testing.T) {
 	}{
 		// Init data passed using flags
 		{
-			name: "pass without any flag except the cri socket (use defaults)",
+			name: "pass without any flag (use defaults)",
 		},
 		{
 			name: "fail if unknown feature gates flag are passed",
@@ -121,12 +122,12 @@ func TestNewInitData(t *testing.T) {
 							AdvertiseAddress: "1.2.3.4",
 							BindPort:         6443,
 						},
-						BootstrapTokens: []v1.BootstrapToken{
+						BootstrapTokens: []bootstraptokenv1.BootstrapToken{
 							{
-								Token:  &v1.BootstrapTokenString{ID: "abcdef", Secret: "0123456789abcdef"},
+								Token:  &bootstraptokenv1.BootstrapTokenString{ID: "abcdef", Secret: "0123456789abcdef"},
 								Usages: []string{"signing", "authentication"},
 								TTL: &metav1.Duration{
-									Duration: constants.DefaultTokenDuration,
+									Duration: bootstraptokenv1.DefaultTokenDuration,
 								},
 								Groups: []string{"system:bootstrappers:kubeadm:default-node-token"},
 							},
@@ -188,17 +189,9 @@ func TestNewInitData(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// initialize an external init option and inject it to the init cmd
 			initOptions := newInitOptions()
+			initOptions.skipCRIDetect = true // avoid CRI detection in unit tests
 			cmd := newCmdInit(nil, initOptions)
 
-			// set the cri socket here, otherwise the testcase might fail if is run on the node with multiple
-			// cri endpoints configured, the failure caused by this is normally not an expected failure.
-			if tc.flags == nil {
-				tc.flags = make(map[string]string)
-			}
-			// set `cri-socket` only if `CfgPath` is not set
-			if _, okay := tc.flags[options.CfgPath]; !okay {
-				tc.flags[options.NodeCRISocket] = constants.UnknownCRISocket
-			}
 			// sets cmd flags (that will be reflected on the init options)
 			for f, v := range tc.flags {
 				cmd.Flags().Set(f, v)
@@ -216,6 +209,131 @@ func TestNewInitData(t *testing.T) {
 			if tc.validate != nil {
 				tc.validate(t, data)
 			}
+		})
+	}
+}
+
+func TestManageSkippedAddons(t *testing.T) {
+	testcases := []struct {
+		name               string
+		cfg                *kubeadmapi.ClusterConfiguration
+		expectedCfg        *kubeadmapi.ClusterConfiguration
+		skipPhases         []string
+		expectedSkipPhases []string
+	}{
+		{
+			name: "disable proxy and DNS if 'addon' is in skipPhases",
+			cfg:  &kubeadmapi.ClusterConfiguration{},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+				Proxy: kubeadmapi.Proxy{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon"},
+			expectedSkipPhases: []string{"addon"},
+		},
+		{
+			name: "disable proxy and DNS if 'addon/coredns' and 'addon/kube-proxy' are in skipPhases",
+			cfg:  &kubeadmapi.ClusterConfiguration{},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+				Proxy: kubeadmapi.Proxy{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon/coredns", "addon/kube-proxy"},
+			expectedSkipPhases: []string{"addon/coredns", "addon/kube-proxy"},
+		},
+		{
+			name: "disable proxy if 'addon/kube-proxy' is in skipPhases",
+			cfg:  &kubeadmapi.ClusterConfiguration{},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				Proxy: kubeadmapi.Proxy{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon/kube-proxy"},
+			expectedSkipPhases: []string{"addon/kube-proxy"},
+		},
+		{
+			name: "disable DNS if 'addon/coredns' is in skipPhases",
+			cfg:  &kubeadmapi.ClusterConfiguration{},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon/coredns"},
+			expectedSkipPhases: []string{"addon/coredns"},
+		},
+		{
+			name: "add 'addon/coredns' and 'addon/kube-proxy' to skipPhases if DNS and proxy are disabled",
+			cfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+				Proxy: kubeadmapi.Proxy{
+					Disabled: true,
+				},
+			},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+				Proxy: kubeadmapi.Proxy{
+					Disabled: true,
+				},
+			},
+			expectedSkipPhases: []string{"addon/coredns", "addon/kube-proxy"},
+		},
+		{
+			name: "don't add duplicates in skipPhases",
+			cfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+			},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon/coredns"},
+			expectedSkipPhases: []string{"addon/coredns"},
+		},
+		{
+			name: "overwrite addon Disabled status if skipPhases is set",
+			cfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: false,
+				},
+			},
+			expectedCfg: &kubeadmapi.ClusterConfiguration{
+				DNS: kubeadmapi.DNS{
+					Disabled: true,
+				},
+			},
+			skipPhases:         []string{"addon/coredns"},
+			expectedSkipPhases: []string{"addon/coredns"},
+		},
+		{
+			name:               "do nothing if addon Disabled field and skipPhases are not configured",
+			cfg:                &kubeadmapi.ClusterConfiguration{},
+			expectedCfg:        &kubeadmapi.ClusterConfiguration{},
+			skipPhases:         []string{},
+			expectedSkipPhases: []string{},
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			skipPhases := manageSkippedAddons(tc.cfg, tc.skipPhases)
+			assert.Equal(t, tc.expectedSkipPhases, skipPhases)
+			assert.Equal(t, tc.expectedCfg, tc.cfg)
 		})
 	}
 }

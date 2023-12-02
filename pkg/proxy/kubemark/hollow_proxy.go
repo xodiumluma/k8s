@@ -22,6 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientset "k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -29,6 +30,7 @@ import (
 	utilsysctl "k8s.io/component-helpers/node/util/sysctl"
 	proxyapp "k8s.io/kubernetes/cmd/kube-proxy/app"
 	"k8s.io/kubernetes/pkg/proxy"
+	proxyconfigapi "k8s.io/kubernetes/pkg/proxy/apis/config"
 	proxyconfig "k8s.io/kubernetes/pkg/proxy/config"
 	"k8s.io/kubernetes/pkg/proxy/iptables"
 	proxyutiliptables "k8s.io/kubernetes/pkg/proxy/util/iptables"
@@ -36,7 +38,7 @@ import (
 	utilnode "k8s.io/kubernetes/pkg/util/node"
 	utilexec "k8s.io/utils/exec"
 	netutils "k8s.io/utils/net"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"k8s.io/klog/v2"
 )
@@ -107,6 +109,7 @@ func NewHollowProxyOrDie(
 			recorder,
 			nil,
 			[]string{},
+			false,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create proxier: %v", err)
@@ -124,14 +127,17 @@ func NewHollowProxyOrDie(
 	}
 	return &HollowProxy{
 		ProxyServer: &proxyapp.ProxyServer{
-			Client:           client,
-			Proxier:          proxier,
-			Broadcaster:      broadcaster,
-			Recorder:         recorder,
-			ProxyMode:        "fake",
-			NodeRef:          nodeRef,
-			OOMScoreAdj:      utilpointer.Int32Ptr(0),
-			ConfigSyncPeriod: 30 * time.Second,
+			Config: &proxyconfigapi.KubeProxyConfiguration{
+				Mode:             proxyconfigapi.ProxyMode("fake"),
+				ConfigSyncPeriod: metav1.Duration{Duration: 30 * time.Second},
+				OOMScoreAdj:      ptr.To[int32](0),
+			},
+
+			Client:      client,
+			Proxier:     proxier,
+			Broadcaster: broadcaster,
+			Recorder:    recorder,
+			NodeRef:     nodeRef,
 		},
 	}, nil
 }

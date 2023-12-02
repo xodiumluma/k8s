@@ -289,6 +289,8 @@ func TestGenerateDebugContainer(t *testing.T) {
 						Capabilities: &corev1.Capabilities{
 							Drop: []corev1.Capability{"ALL"},
 						},
+						AllowPrivilegeEscalation: pointer.Bool(false),
+						SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 					},
 				},
 			},
@@ -308,7 +310,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 					SecurityContext: &corev1.SecurityContext{
 						Capabilities: &corev1.Capabilities{
-							Add: []corev1.Capability{"NET_ADMIN"},
+							Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 						},
 					},
 				},
@@ -1274,10 +1276,12 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 							Image:           "busybox",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(true),
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
-								RunAsNonRoot: pointer.Bool(true),
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -1319,11 +1323,12 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN"},
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
 					},
+					ShareProcessNamespace: pointer.Bool(true),
 				},
 			},
 		},
@@ -1646,6 +1651,8 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
 							},
 						},
 					},
@@ -1688,9 +1695,8 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 							VolumeMounts:             nil,
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: pointer.Bool(true),
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN"},
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 								},
 							},
 						},
@@ -2098,7 +2104,7 @@ func TestCompleteAndValidate(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantOpts, opts, cmpFilter, cmpopts.IgnoreFields(DebugOptions{},
-				"attachChanged", "shareProcessedChanged", "podClient", "WarningPrinter", "Applier", "explicitNamespace", "Builder")); diff != "" {
+				"attachChanged", "shareProcessedChanged", "podClient", "WarningPrinter", "Applier", "explicitNamespace", "Builder", "AttachFunc")); diff != "" {
 				t.Error("CompleteAndValidate unexpected diff in generated object: (-want +got):\n", diff)
 			}
 		})

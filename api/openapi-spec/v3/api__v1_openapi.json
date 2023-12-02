@@ -113,7 +113,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "ExpirationTimestamp is the time of expiration of the returned token."
           },
           "token": {
@@ -447,7 +446,7 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.SecretReference"
               }
             ],
-            "description": "nodeExpandSecretRef is a reference to the secret object containing sensitive information to pass to the CSI driver to complete the CSI NodeExpandVolume call. This is a beta field which is enabled default by CSINodeExpandSecret feature gate. This field is optional, may be omitted if no secret is required. If the secret object contains more than one secret, all secrets are passed."
+            "description": "nodeExpandSecretRef is a reference to the secret object containing sensitive information to pass to the CSI driver to complete the CSI NodeExpandVolume call. This field is optional, may be omitted if no secret is required. If the secret object contains more than one secret, all secrets are passed."
           },
           "nodePublishSecretRef": {
             "allOf": [
@@ -699,7 +698,7 @@
             "type": "string"
           },
           "resourceClaimTemplateName": {
-            "description": "ResourceClaimTemplateName is the name of a ResourceClaimTemplate object in the same namespace as this pod.\n\nThe template will be used to create a new ResourceClaim, which will be bound to this pod. When this pod is deleted, the ResourceClaim will also be deleted. The name of the ResourceClaim will be <pod name>-<resource name>, where <resource name> is the PodResourceClaim.Name. Pod validation will reject the pod if the concatenated name is not valid for a ResourceClaim (e.g. too long).\n\nAn existing ResourceClaim with that name that is not owned by the pod will not be used for the pod to avoid using an unrelated resource by mistake. Scheduling and pod startup are then blocked until the unrelated ResourceClaim is removed.\n\nThis field is immutable and no changes will be made to the corresponding ResourceClaim by the control plane after creating the ResourceClaim.",
+            "description": "ResourceClaimTemplateName is the name of a ResourceClaimTemplate object in the same namespace as this pod.\n\nThe template will be used to create a new ResourceClaim, which will be bound to this pod. When this pod is deleted, the ResourceClaim will also be deleted. The pod name and resource name, along with a generated component, will be used to form a unique name for the ResourceClaim, which will be recorded in pod.status.resourceClaimStatuses.\n\nThis field is immutable and no changes will be made to the corresponding ResourceClaim by the control plane after creating the ResourceClaim.",
             "type": "string"
           }
         },
@@ -714,6 +713,40 @@
             "type": "integer"
           }
         },
+        "type": "object"
+      },
+      "io.k8s.api.core.v1.ClusterTrustBundleProjection": {
+        "description": "ClusterTrustBundleProjection describes how to select a set of ClusterTrustBundle objects and project their contents into the pod filesystem.",
+        "properties": {
+          "labelSelector": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
+              }
+            ],
+            "description": "Select all ClusterTrustBundles that match this label selector.  Only has effect if signerName is set.  Mutually-exclusive with name.  If unset, interpreted as \"match nothing\".  If set but empty, interpreted as \"match everything\"."
+          },
+          "name": {
+            "description": "Select a single ClusterTrustBundle by object name.  Mutually-exclusive with signerName and labelSelector.",
+            "type": "string"
+          },
+          "optional": {
+            "description": "If true, don't block pod startup if the referenced ClusterTrustBundle(s) aren't available.  If using name, then the named ClusterTrustBundle is allowed not to exist.  If using signerName, then the combination of signerName and labelSelector is allowed to match zero ClusterTrustBundles.",
+            "type": "boolean"
+          },
+          "path": {
+            "default": "",
+            "description": "Relative path from the volume root to write the bundle.",
+            "type": "string"
+          },
+          "signerName": {
+            "description": "Select all ClusterTrustBundles that match this signer name. Mutually-exclusive with name.  The contents of all selected ClusterTrustBundles will be unified and deduplicated.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
         "type": "object"
       },
       "io.k8s.api.core.v1.ComponentCondition": {
@@ -1179,6 +1212,10 @@
             "default": {},
             "description": "Compute Resources required by this container. Cannot be updated. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/"
           },
+          "restartPolicy": {
+            "description": "RestartPolicy defines the restart behavior of individual containers in a pod. This field may only be set for init containers, and the only allowed value is \"Always\". For non-init containers or when this field is not specified, the restart behavior is defined by the Pod's restart policy and the container type. Setting the RestartPolicy as \"Always\" for the init container will have the following effect: this init container will be continually restarted on exit until all regular containers have terminated. Once all regular containers have completed, all init containers with restartPolicy \"Always\" will be shut down. This lifecycle differs from normal init containers and is often referred to as a \"sidecar\" container. Although this init container still starts in the init container sequence, it does not wait for the container to complete before proceeding to the next init container. Instead, the next init container starts immediately after this init container is started, or after any startupProbe has successfully completed.",
+            "type": "string"
+          },
           "securityContext": {
             "allOf": [
               {
@@ -1364,7 +1401,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Time at which the container was last (re-)started"
           }
         },
@@ -1389,7 +1425,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Time at which the container last terminated"
           },
           "message": {
@@ -1411,7 +1446,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Time at which previous execution of the container started"
           }
         },
@@ -1439,12 +1473,7 @@
         "properties": {
           "allocatedResources": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "AllocatedResources represents the compute resources allocated for this container by the node. Kubelet sets this value to Container.Resources.Requests upon successful pod admission and after successfully admitting desired pod resize.",
             "type": "object"
@@ -1663,7 +1692,7 @@
         "description": "EndpointPort is a tuple that describes a single port.",
         "properties": {
           "appProtocol": {
-            "description": "The application protocol for this port. This is used as a hint for implementations to offer richer behavior for protocols that they understand. This field follows standard Kubernetes label syntax. Valid values are either:\n\n* Un-prefixed protocol names - reserved for IANA standard service names (as per RFC-6335 and https://www.iana.org/assignments/service-names).\n\n* Kubernetes-defined prefixed names:\n  * 'kubernetes.io/h2c' - HTTP/2 over cleartext as described in https://www.rfc-editor.org/rfc/rfc7540\n\n* Other protocols should use implementation-defined prefixed names such as mycompany.com/my-custom-protocol.",
+            "description": "The application protocol for this port. This is used as a hint for implementations to offer richer behavior for protocols that they understand. This field follows standard Kubernetes label syntax. Valid values are either:\n\n* Un-prefixed protocol names - reserved for IANA standard service names (as per RFC-6335 and https://www.iana.org/assignments/service-names).\n\n* Kubernetes-defined prefixed names:\n  * 'kubernetes.io/h2c' - HTTP/2 prior knowledge over cleartext as described in https://www.rfc-editor.org/rfc/rfc9113.html#name-starting-http-2-with-prior-\n  * 'kubernetes.io/ws'  - WebSocket over cleartext as described in https://www.rfc-editor.org/rfc/rfc6455\n  * 'kubernetes.io/wss' - WebSocket over TLS as described in https://www.rfc-editor.org/rfc/rfc6455\n\n* Other protocols should use implementation-defined prefixed names such as mycompany.com/my-custom-protocol.",
             "type": "string"
           },
           "name": {
@@ -2029,6 +2058,10 @@
             "default": {},
             "description": "Resources are not allowed for ephemeral containers. Ephemeral containers use spare resources already allocated to the pod."
           },
+          "restartPolicy": {
+            "description": "Restart policy for the container to manage the restart behavior of each container within a pod. This may only be set for init containers. You cannot set this field on ephemeral containers.",
+            "type": "string"
+          },
           "securityContext": {
             "allOf": [
               {
@@ -2143,7 +2176,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime"
               }
             ],
-            "default": {},
             "description": "Time when this Event was first observed."
           },
           "firstTimestamp": {
@@ -2152,7 +2184,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "The time at which the event was first recorded. (Time of server receipt is in TypeMeta.)"
           },
           "involvedObject": {
@@ -2174,7 +2205,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "The time at which the most recent occurrence of this event was recorded."
           },
           "message": {
@@ -2306,7 +2336,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime"
               }
             ],
-            "default": {},
             "description": "Time of the last occurrence observed"
           }
         },
@@ -2614,7 +2643,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
               }
             ],
-            "default": {},
             "description": "Name or number of the port to access on the container. Number must be in the range 1 to 65535. Name must be an IANA_SVC_NAME."
           },
           "scheme": {
@@ -2660,6 +2688,16 @@
           },
           "ip": {
             "description": "IP address of the host file entry.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "io.k8s.api.core.v1.HostIP": {
+        "description": "HostIP represents a single IP address allocated to the host.",
+        "properties": {
+          "ip": {
+            "description": "IP is the IP address assigned to the host",
             "type": "string"
           }
         },
@@ -2883,6 +2921,14 @@
             ],
             "description": "HTTPGet specifies the http request to perform."
           },
+          "sleep": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.SleepAction"
+              }
+            ],
+            "description": "Sleep represents the duration that the container should sleep before being terminated."
+          },
           "tcpSocket": {
             "allOf": [
               {
@@ -2938,60 +2984,35 @@
         "properties": {
           "default": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Default resource requirement limit value by resource name if resource limit is omitted.",
             "type": "object"
           },
           "defaultRequest": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "DefaultRequest is the default resource requirement request value by resource name if resource request is omitted.",
             "type": "object"
           },
           "max": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Max usage constraints on this kind by resource name.",
             "type": "object"
           },
           "maxLimitRequestRatio": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "MaxLimitRequestRatio if specified, the named resource must have a request and limit that are both non-zero where limit divided by request is less than or equal to the enumerated value; this represents the max burst for the named resource.",
             "type": "object"
           },
           "min": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Min usage constraints on this kind by resource name.",
             "type": "object"
@@ -3084,6 +3105,10 @@
             "description": "IP is set for load-balancer ingress points that are IP based (typically GCE or OpenStack load-balancers)",
             "type": "string"
           },
+          "ipMode": {
+            "description": "IPMode specifies how the load-balancer IP behaves, and may only be specified when the ip field is specified. Setting this to \"VIP\" indicates that traffic is delivered to the node with the destination set to the load-balancer's IP and port. Setting this to \"Proxy\" indicates that traffic is delivered to the node or pod with the destination set to the node's IP and node port or the pod's IP and port. Service implementations may use this information to adjust traffic routing.",
+            "type": "string"
+          },
           "ports": {
             "description": "Ports is a list of records of service ports If used, every port defined in the service should have an entry in it",
             "items": {
@@ -3144,6 +3169,24 @@
         },
         "required": [
           "path"
+        ],
+        "type": "object"
+      },
+      "io.k8s.api.core.v1.ModifyVolumeStatus": {
+        "description": "ModifyVolumeStatus represents the status object of ControllerModifyVolume operation",
+        "properties": {
+          "status": {
+            "default": "",
+            "description": "status is the status of the ControllerModifyVolume operation. It can be in any of following states:\n - Pending\n   Pending indicates that the PersistentVolumeClaim cannot be modified due to unmet requirements, such as\n   the specified VolumeAttributesClass not existing.\n - InProgress\n   InProgress indicates that the volume is being modified.\n - Infeasible\n  Infeasible indicates that the request has been rejected as invalid by the CSI driver. To\n\t  resolve the error, a valid VolumeAttributesClass needs to be specified.\nNote: New statuses can be added in the future. Consumers should check for unknown statuses and fail appropriately.",
+            "type": "string"
+          },
+          "targetVolumeAttributesClassName": {
+            "description": "targetVolumeAttributesClassName is the name of the VolumeAttributesClass the PVC currently being reconciled",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
         ],
         "type": "object"
       },
@@ -3223,12 +3266,7 @@
         "description": "NamespaceCondition contains details about state of namespace.",
         "properties": {
           "lastTransitionTime": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
-              }
-            ],
-            "default": {}
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
           },
           "message": {
             "type": "string"
@@ -3439,7 +3477,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Last time we got an update on a given condition."
           },
           "lastTransitionTime": {
@@ -3448,7 +3485,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Last time the condition transit from one status to another."
           },
           "message": {
@@ -3735,24 +3771,14 @@
           },
           "allocatable": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Allocatable represents the resources of a node that are available for scheduling. Defaults to Capacity.",
             "type": "object"
           },
           "capacity": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Capacity represents the total resources of a node. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#capacity",
             "type": "object"
@@ -4063,7 +4089,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "lastProbeTime is the time we probed the condition."
           },
           "lastTransitionTime": {
@@ -4072,7 +4097,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "lastTransitionTime is the time the condition transitioned from one status to another."
           },
           "message": {
@@ -4173,7 +4197,7 @@
           "resources": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/io.k8s.api.core.v1.ResourceRequirements"
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.VolumeResourceRequirements"
               }
             ],
             "default": {},
@@ -4189,6 +4213,10 @@
           },
           "storageClassName": {
             "description": "storageClassName is the name of the StorageClass required by the claim. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1",
+            "type": "string"
+          },
+          "volumeAttributesClassName": {
+            "description": "volumeAttributesClassName may be used to set the VolumeAttributesClass used by this claim. If specified, the CSI driver will create or update the volume with the attributes defined in the corresponding VolumeAttributesClass. This has a different purpose than storageClassName, it can be changed after the claim is created. An empty string value means that no VolumeAttributesClass will be applied to the claim but it's not allowed to reset this field to empty string once it is set. If unspecified and the PersistentVolumeClaim is unbound, the default VolumeAttributesClass will be set by the persistentvolume controller if it exists. If the resource referred to by volumeAttributesClass does not exist, this PersistentVolumeClaim will be set to a Pending state, as reflected by the modifyVolumeStatus field, until such as a resource exists. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#volumeattributesclass (Alpha) Using this field requires the VolumeAttributesClass feature gate to be enabled.",
             "type": "string"
           },
           "volumeMode": {
@@ -4213,26 +4241,25 @@
             },
             "type": "array"
           },
+          "allocatedResourceStatuses": {
+            "additionalProperties": {
+              "default": "",
+              "type": "string"
+            },
+            "description": "allocatedResourceStatuses stores status of resource being resized for the given PVC. Key names follow standard Kubernetes label syntax. Valid values are either:\n\t* Un-prefixed keys:\n\t\t- storage - the capacity of the volume.\n\t* Custom resources must use implementation-defined prefixed names such as \"example.com/my-custom-resource\"\nApart from above values - keys that are unprefixed or have kubernetes.io prefix are considered reserved and hence may not be used.\n\nClaimResourceStatus can be in any of following states:\n\t- ControllerResizeInProgress:\n\t\tState set when resize controller starts resizing the volume in control-plane.\n\t- ControllerResizeFailed:\n\t\tState set when resize has failed in resize controller with a terminal error.\n\t- NodeResizePending:\n\t\tState set when resize controller has finished resizing the volume but further resizing of\n\t\tvolume is needed on the node.\n\t- NodeResizeInProgress:\n\t\tState set when kubelet starts resizing the volume.\n\t- NodeResizeFailed:\n\t\tState set when resizing has failed in kubelet with a terminal error. Transient errors don't set\n\t\tNodeResizeFailed.\nFor example: if expanding a PVC for more capacity - this field can be one of the following states:\n\t- pvc.status.allocatedResourceStatus['storage'] = \"ControllerResizeInProgress\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"ControllerResizeFailed\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizePending\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizeInProgress\"\n     - pvc.status.allocatedResourceStatus['storage'] = \"NodeResizeFailed\"\nWhen this field is not set, it means that no resize operation is in progress for the given PVC.\n\nA controller that receives PVC update with previously unknown resourceName or ClaimResourceStatus should ignore the update for the purpose it was designed. For example - a controller that only is responsible for resizing capacity of the volume, should ignore PVC updates that change other valid resources associated with PVC.\n\nThis is an alpha field and requires enabling RecoverVolumeExpansionFailure feature.",
+            "type": "object",
+            "x-kubernetes-map-type": "granular"
+          },
           "allocatedResources": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
-            "description": "allocatedResources is the storage resource within AllocatedResources tracks the capacity allocated to a PVC. It may be larger than the actual capacity when a volume expansion operation is requested. For storage quota, the larger value from allocatedResources and PVC.spec.resources is used. If allocatedResources is not set, PVC.spec.resources alone is used for quota calculation. If a volume expansion capacity request is lowered, allocatedResources is only lowered if there are no expansion operations in progress and if the actual volume capacity is equal or lower than the requested capacity. This is an alpha field and requires enabling RecoverVolumeExpansionFailure feature.",
+            "description": "allocatedResources tracks the resources allocated to a PVC including its capacity. Key names follow standard Kubernetes label syntax. Valid values are either:\n\t* Un-prefixed keys:\n\t\t- storage - the capacity of the volume.\n\t* Custom resources must use implementation-defined prefixed names such as \"example.com/my-custom-resource\"\nApart from above values - keys that are unprefixed or have kubernetes.io prefix are considered reserved and hence may not be used.\n\nCapacity reported here may be larger than the actual capacity when a volume expansion operation is requested. For storage quota, the larger value from allocatedResources and PVC.spec.resources is used. If allocatedResources is not set, PVC.spec.resources alone is used for quota calculation. If a volume expansion capacity request is lowered, allocatedResources is only lowered if there are no expansion operations in progress and if the actual volume capacity is equal or lower than the requested capacity.\n\nA controller that receives PVC update with previously unknown resourceName should ignore the update for the purpose it was designed. For example - a controller that only is responsible for resizing capacity of the volume, should ignore PVC updates that change other valid resources associated with PVC.\n\nThis is an alpha field and requires enabling RecoverVolumeExpansionFailure feature.",
             "type": "object"
           },
           "capacity": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "capacity represents the actual resources of the underlying volume.",
             "type": "object"
@@ -4251,12 +4278,20 @@
             "x-kubernetes-patch-merge-key": "type",
             "x-kubernetes-patch-strategy": "merge"
           },
-          "phase": {
-            "description": "phase represents the current phase of PersistentVolumeClaim.",
+          "currentVolumeAttributesClassName": {
+            "description": "currentVolumeAttributesClassName is the current name of the VolumeAttributesClass the PVC is using. When unset, there is no VolumeAttributeClass applied to this PersistentVolumeClaim This is an alpha field and requires enabling VolumeAttributesClass feature.",
             "type": "string"
           },
-          "resizeStatus": {
-            "description": "resizeStatus stores status of resize operation. ResizeStatus is not set by default but when expansion is complete resizeStatus is set to empty string by resize controller or kubelet. This is an alpha field and requires enabling RecoverVolumeExpansionFailure feature.",
+          "modifyVolumeStatus": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.ModifyVolumeStatus"
+              }
+            ],
+            "description": "ModifyVolumeStatus represents the status object of ControllerModifyVolume operation. When this is unset, there is no ModifyVolume operation being attempted. This is an alpha field and requires enabling VolumeAttributesClass feature."
+          },
+          "phase": {
+            "description": "phase represents the current phase of PersistentVolumeClaim.",
             "type": "string"
           }
         },
@@ -4389,12 +4424,7 @@
           },
           "capacity": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "capacity is the description of the persistent volume's resources and capacity. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#capacity",
             "type": "object"
@@ -4576,6 +4606,10 @@
             ],
             "description": "storageOS represents a StorageOS volume that is attached to the kubelet's host machine and mounted into the pod More info: https://examples.k8s.io/volumes/storageos/README.md"
           },
+          "volumeAttributesClassName": {
+            "description": "Name of VolumeAttributesClass to which this persistent volume belongs. Empty value is not allowed. When this field is not set, it indicates that this volume does not belong to any VolumeAttributesClass. This field is mutable and can be changed by the CSI driver after a volume has been updated successfully to a new class. For an unbound PersistentVolume, the volumeAttributesClassName will be matched with unbound PersistentVolumeClaims during the binding process. This is an alpha field and requires enabling VolumeAttributesClass feature.",
+            "type": "string"
+          },
           "volumeMode": {
             "description": "volumeMode defines if a volume is intended to be used with a formatted filesystem or to remain in raw block state. Value of Filesystem is implied when not included in spec.",
             "type": "string"
@@ -4594,6 +4628,14 @@
       "io.k8s.api.core.v1.PersistentVolumeStatus": {
         "description": "PersistentVolumeStatus is the current status of a persistent volume.",
         "properties": {
+          "lastPhaseTransitionTime": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+              }
+            ],
+            "description": "lastPhaseTransitionTime is the time the phase transitioned from one to another and automatically resets to current time everytime a volume phase transitions. This is an alpha field and requires enabling PersistentVolumeLastPhaseTransitionTime feature."
+          },
           "message": {
             "description": "message is a human-readable message indicating details about why the volume is in this state.",
             "type": "string"
@@ -4714,7 +4756,25 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
               }
             ],
-            "description": "A label query over a set of resources, in this case pods."
+            "description": "A label query over a set of resources, in this case pods. If it's null, this PodAffinityTerm matches with no Pods."
+          },
+          "matchLabelKeys": {
+            "description": "MatchLabelKeys is a set of pod label keys to select which pods will be taken into consideration. The keys are used to lookup values from the incoming pod labels, those key-value labels are merged with `LabelSelector` as `key in (value)` to select the group of existing pods which pods will be taken into consideration for the incoming pod's pod (anti) affinity. Keys that don't exist in the incoming pod labels will be ignored. The default value is empty. The same key is forbidden to exist in both MatchLabelKeys and LabelSelector. Also, MatchLabelKeys cannot be set when LabelSelector isn't set. This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.",
+            "items": {
+              "default": "",
+              "type": "string"
+            },
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
+          },
+          "mismatchLabelKeys": {
+            "description": "MismatchLabelKeys is a set of pod label keys to select which pods will be taken into consideration. The keys are used to lookup values from the incoming pod labels, those key-value labels are merged with `LabelSelector` as `key notin (value)` to select the group of existing pods which pods will be taken into consideration for the incoming pod's pod (anti) affinity. Keys that don't exist in the incoming pod labels will be ignored. The default value is empty. The same key is forbidden to exist in both MismatchLabelKeys and LabelSelector. Also, MismatchLabelKeys cannot be set when LabelSelector isn't set. This is an alpha field and requires enabling MatchLabelKeysInPodAffinity feature gate.",
+            "items": {
+              "default": "",
+              "type": "string"
+            },
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "namespaceSelector": {
             "allOf": [
@@ -4782,7 +4842,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Last time we probed the condition."
           },
           "lastTransitionTime": {
@@ -4791,7 +4850,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "Last time the condition transitioned from one status to another."
           },
           "message": {
@@ -4867,10 +4925,10 @@
         "type": "object"
       },
       "io.k8s.api.core.v1.PodIP": {
-        "description": "IP address information for entries in the (plural) PodIPs field. Each entry includes:\n\n\tIP: An IP address allocated to the pod. Routable at least within the cluster.",
+        "description": "PodIP represents a single IP address allocated to the pod.",
         "properties": {
           "ip": {
-            "description": "ip is an IP address (IPv4 or IPv6) assigned to the pod",
+            "description": "IP is the IP address assigned to the pod",
             "type": "string"
           }
         },
@@ -4965,6 +5023,24 @@
             ],
             "default": {},
             "description": "Source describes where to find the ResourceClaim."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "io.k8s.api.core.v1.PodResourceClaimStatus": {
+        "description": "PodResourceClaimStatus is stored in the PodStatus for each PodResourceClaim which references a ResourceClaimTemplate. It stores the generated name for the corresponding ResourceClaim.",
+        "properties": {
+          "name": {
+            "default": "",
+            "description": "Name uniquely identifies this resource claim inside the pod. This must match the name of an entry in pod.spec.resourceClaims, which implies that the string must be a DNS_LABEL.",
+            "type": "string"
+          },
+          "resourceClaimName": {
+            "description": "ResourceClaimName is the name of the ResourceClaim that was generated for the Pod in the namespace of the Pod. It this is unset, then generating a ResourceClaim was not necessary. The pod.spec.resourceClaims entry can be ignored in this case.",
+            "type": "string"
           }
         },
         "required": [
@@ -5209,12 +5285,7 @@
           },
           "overhead": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Overhead represents the resource overhead associated with running a pod for a given RuntimeClass. This field will be autopopulated at admission time by the RuntimeClass admission controller. If the RuntimeClass admission controller is enabled, overhead must not be set in Pod create requests. The RuntimeClass admission controller will reject Pod create requests which have the overhead already set. If RuntimeClass is configured and selected in the PodSpec, Overhead will be set to the value defined in the corresponding RuntimeClass, otherwise it will remain unset and treated as zero. More info: https://git.k8s.io/enhancements/keps/sig-node/688-pod-overhead/README.md",
             "type": "object"
@@ -5418,8 +5489,23 @@
             "type": "array"
           },
           "hostIP": {
-            "description": "IP address of the host to which the pod is assigned. Empty if not yet scheduled.",
+            "description": "hostIP holds the IP address of the host to which the pod is assigned. Empty if the pod has not started yet. A pod can be assigned to a node that has a problem in kubelet which in turns mean that HostIP will not be updated even if there is a node is assigned to pod",
             "type": "string"
+          },
+          "hostIPs": {
+            "description": "hostIPs holds the IP addresses allocated to the host. If this field is specified, the first entry must match the hostIP field. This list is empty if the pod has not started yet. A pod can be assigned to a node that has a problem in kubelet which in turns means that HostIPs will not be updated even if there is a node is assigned to this pod.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.HostIP"
+                }
+              ],
+              "default": {}
+            },
+            "type": "array",
+            "x-kubernetes-list-type": "atomic",
+            "x-kubernetes-patch-merge-key": "ip",
+            "x-kubernetes-patch-strategy": "merge"
           },
           "initContainerStatuses": {
             "description": "The list has one entry per init container in the manifest. The most recent successful init container will have ready = true, the most recently started container will have startTime set. More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#pod-and-container-status",
@@ -5446,7 +5532,7 @@
             "type": "string"
           },
           "podIP": {
-            "description": "IP address allocated to the pod. Routable at least within the cluster. Empty if not yet allocated.",
+            "description": "podIP address allocated to the pod. Routable at least within the cluster. Empty if not yet allocated.",
             "type": "string"
           },
           "podIPs": {
@@ -5474,6 +5560,24 @@
           "resize": {
             "description": "Status of resources resize desired for pod's containers. It is empty if no resources resize is pending. Any changes to container resources will automatically set this to \"Proposed\"",
             "type": "string"
+          },
+          "resourceClaimStatuses": {
+            "description": "Status of resource claims.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.PodResourceClaimStatus"
+                }
+              ],
+              "default": {}
+            },
+            "type": "array",
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map",
+            "x-kubernetes-patch-merge-key": "name",
+            "x-kubernetes-patch-strategy": "merge,retainKeys"
           },
           "startTime": {
             "allOf": [
@@ -5951,7 +6055,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "The last time the condition transitioned from one status to another."
           },
           "message": {
@@ -6133,7 +6236,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
               }
             ],
-            "default": {},
             "description": "Specifies the output format of the exposed resources, defaults to \"1\""
           },
           "resource": {
@@ -6246,12 +6348,7 @@
         "properties": {
           "hard": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "hard is the set of desired hard limits for each named resource. More info: https://kubernetes.io/docs/concepts/policy/resource-quotas/",
             "type": "object"
@@ -6280,24 +6377,14 @@
         "properties": {
           "hard": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Hard is the set of enforced hard limits for each named resource. More info: https://kubernetes.io/docs/concepts/policy/resource-quotas/",
             "type": "object"
           },
           "used": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Used is the current observed total usage of the resource in the namespace.",
             "type": "object"
@@ -6326,24 +6413,14 @@
           },
           "limits": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Limits describes the maximum amount of compute resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
             "type": "object"
           },
           "requests": {
             "additionalProperties": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-                }
-              ],
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
             },
             "description": "Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
             "type": "object"
@@ -6538,7 +6615,7 @@
         "description": "SeccompProfile defines a pod/container's seccomp profile settings. Only one profile source may be set.",
         "properties": {
           "localhostProfile": {
-            "description": "localhostProfile indicates a profile defined in a file on the node should be used. The profile must be preconfigured on the node to work. Must be a descending path, relative to the kubelet's configured seccomp profile location. Must only be set if type is \"Localhost\".",
+            "description": "localhostProfile indicates a profile defined in a file on the node should be used. The profile must be preconfigured on the node to work. Must be a descending path, relative to the kubelet's configured seccomp profile location. Must be set if type is \"Localhost\". Must NOT be set for any other type.",
             "type": "string"
           },
           "type": {
@@ -7061,7 +7138,7 @@
         "description": "ServicePort contains information on service's port.",
         "properties": {
           "appProtocol": {
-            "description": "The application protocol for this port. This field follows standard Kubernetes label syntax. Un-prefixed names are reserved for IANA standard service names (as per RFC-6335 and https://www.iana.org/assignments/service-names). Non-standard protocols should use prefixed names such as mycompany.com/my-custom-protocol.",
+            "description": "The application protocol for this port. This is used as a hint for implementations to offer richer behavior for protocols that they understand. This field follows standard Kubernetes label syntax. Valid values are either:\n\n* Un-prefixed protocol names - reserved for IANA standard service names (as per RFC-6335 and https://www.iana.org/assignments/service-names).\n\n* Kubernetes-defined prefixed names:\n  * 'kubernetes.io/h2c' - HTTP/2 prior knowledge over cleartext as described in https://www.rfc-editor.org/rfc/rfc9113.html#name-starting-http-2-with-prior-\n  * 'kubernetes.io/ws'  - WebSocket over cleartext as described in https://www.rfc-editor.org/rfc/rfc6455\n  * 'kubernetes.io/wss' - WebSocket over TLS as described in https://www.rfc-editor.org/rfc/rfc6455\n\n* Other protocols should use implementation-defined prefixed names such as mycompany.com/my-custom-protocol.",
             "type": "string"
           },
           "name": {
@@ -7090,7 +7167,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
               }
             ],
-            "default": {},
             "description": "Number or name of the port to access on the pods targeted by the service. Number must be in the range 1 to 65535. Name must be an IANA_SVC_NAME. If this is a string, it will be looked up as a named port in the target Pod's container ports. If this is not specified, the value of the 'port' field is used (an identity map). This field is ignored for services with clusterIP=None, and should be omitted or set equal to the 'port' field. More info: https://kubernetes.io/docs/concepts/services-networking/service/#defining-a-service"
           }
         },
@@ -7271,6 +7347,21 @@
         },
         "type": "object"
       },
+      "io.k8s.api.core.v1.SleepAction": {
+        "description": "SleepAction describes a \"sleep\" action.",
+        "properties": {
+          "seconds": {
+            "default": 0,
+            "description": "Seconds is the number of seconds to sleep.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seconds"
+        ],
+        "type": "object"
+      },
       "io.k8s.api.core.v1.StorageOSPersistentVolumeSource": {
         "description": "Represents a StorageOS persistent volume resource.",
         "properties": {
@@ -7364,7 +7455,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
               }
             ],
-            "default": {},
             "description": "Number or name of the port to access on the container. Number must be in the range 1 to 65535. Name must be an IANA_SVC_NAME."
           }
         },
@@ -7860,6 +7950,14 @@
       "io.k8s.api.core.v1.VolumeProjection": {
         "description": "Projection that may be projected along with other supported volume types",
         "properties": {
+          "clusterTrustBundle": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.ClusterTrustBundleProjection"
+              }
+            ],
+            "description": "ClusterTrustBundle allows a pod to access the `.spec.trustBundle` field of ClusterTrustBundle objects in an auto-updating file.\n\nAlpha, gated by the ClusterTrustBundleProjection feature gate.\n\nClusterTrustBundle objects can either be selected by name, or by the combination of signer name and a label selector.\n\nKubelet performs aggressive normalization of the PEM contents written into the pod filesystem.  Esoteric PEM features such as inter-block comments and block headers are stripped.  Certificates are deduplicated. The ordering of certificates within the file is arbitrary, and Kubelet may change the order over time."
+          },
           "configMap": {
             "allOf": [
               {
@@ -7891,6 +7989,26 @@
               }
             ],
             "description": "serviceAccountToken is information about the serviceAccountToken data to project"
+          }
+        },
+        "type": "object"
+      },
+      "io.k8s.api.core.v1.VolumeResourceRequirements": {
+        "description": "VolumeResourceRequirements describes the storage resource requirements for a volume.",
+        "properties": {
+          "limits": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
+            },
+            "description": "Limits describes the maximum amount of compute resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+            "type": "object"
+          },
+          "requests": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
+            },
+            "description": "Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+            "type": "object"
           }
         },
         "type": "object"
@@ -7958,7 +8076,7 @@
             "type": "string"
           },
           "hostProcess": {
-            "description": "HostProcess determines if a container should be run as a 'Host Process' container. This field is alpha-level and will only be honored by components that enable the WindowsHostProcessContainers feature flag. Setting this field without the feature flag will result in errors when validating the Pod. All of a Pod's containers must have the same effective HostProcess value (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).  In addition, if HostProcess is true then HostNetwork must also be set to true.",
+            "description": "HostProcess determines if a container should be run as a 'Host Process' container. All of a Pod's containers must have the same effective HostProcess value (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers). In addition, if HostProcess is true then HostNetwork must also be set to true.",
             "type": "boolean"
           },
           "runAsUserName": {
@@ -8137,7 +8255,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable."
           },
           "message": {
@@ -8391,7 +8508,7 @@
           {
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "DeleteOptions",
-            "version": "v1alpha1"
+            "version": "v1"
           },
           {
             "group": "flowcontrol.apiserver.k8s.io",
@@ -8547,9 +8664,7 @@
           "key": {
             "default": "",
             "description": "key is the label key that the selector applies to.",
-            "type": "string",
-            "x-kubernetes-patch-merge-key": "key",
-            "x-kubernetes-patch-strategy": "merge"
+            "type": "string"
           },
           "operator": {
             "default": "",
@@ -8658,7 +8773,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
               }
             ],
-            "default": {},
             "description": "CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.\n\nPopulated by the system. Read-only. Null for lists. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "deletionGracePeriodSeconds": {
@@ -8939,7 +9053,6 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.runtime.RawExtension"
               }
             ],
-            "default": {},
             "description": "Object is:\n * If Type is Added or Modified: the new state of the object.\n * If Type is Deleted: the state of the object immediately before deletion.\n * If Type is Error: *Status is recommended; other types may make sense\n   depending on context."
           },
           "type": {
@@ -9126,7 +9239,7 @@
           {
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "WatchEvent",
-            "version": "v1alpha1"
+            "version": "v1"
           },
           {
             "group": "flowcontrol.apiserver.k8s.io",
@@ -9407,7 +9520,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -9513,7 +9626,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -9619,7 +9732,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -9770,7 +9883,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -9921,7 +10034,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -10072,7 +10185,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -10270,7 +10383,7 @@
       },
       "parameters": [
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -10318,7 +10431,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Namespace"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -10436,7 +10550,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -10455,7 +10569,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Binding"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -10843,7 +10958,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -10891,7 +11006,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ConfigMap"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -11135,7 +11251,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -11207,7 +11323,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -11303,7 +11420,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ConfigMap"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -11671,7 +11789,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -11719,7 +11837,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Endpoints"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -11963,7 +12082,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -12035,7 +12154,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -12131,7 +12251,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Endpoints"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -12499,7 +12620,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -12547,7 +12668,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Event"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -12791,7 +12913,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -12863,7 +12985,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -12959,7 +13082,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Event"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -13327,7 +13451,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -13375,7 +13499,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.LimitRange"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -13619,7 +13744,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -13691,7 +13816,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -13787,7 +13913,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.LimitRange"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -14155,7 +14282,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -14203,7 +14330,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolumeClaim"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -14447,7 +14575,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -14519,7 +14647,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -14615,7 +14744,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolumeClaim"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -14734,7 +14864,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -14806,7 +14936,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -14902,7 +15033,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolumeClaim"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -15270,7 +15402,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -15318,7 +15450,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Pod"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -15562,7 +15695,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -15634,7 +15767,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -15730,7 +15864,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Pod"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -15963,7 +16098,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -15982,7 +16117,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Binding"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -16121,7 +16257,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -16193,7 +16329,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -16289,7 +16426,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Pod"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -16397,7 +16535,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -16416,7 +16554,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.policy.v1.Eviction"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -16730,7 +16869,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -17394,7 +17533,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -17466,7 +17605,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -17562,7 +17702,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Pod"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -17930,7 +18071,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -17978,7 +18119,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PodTemplate"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -18222,7 +18364,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -18294,7 +18436,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -18390,7 +18533,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PodTemplate"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -18758,7 +18902,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -18806,7 +18950,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ReplicationController"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19050,7 +19195,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -19122,7 +19267,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19218,7 +19364,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ReplicationController"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19337,7 +19484,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -19409,7 +19556,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19505,7 +19653,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.autoscaling.v1.Scale"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19624,7 +19773,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -19696,7 +19845,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19792,7 +19942,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ReplicationController"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -20160,7 +20311,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -20208,7 +20359,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ResourceQuota"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -20452,7 +20604,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -20524,7 +20676,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -20620,7 +20773,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ResourceQuota"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -20739,7 +20893,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -20811,7 +20965,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -20907,7 +21062,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ResourceQuota"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -21275,7 +21431,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -21323,7 +21479,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Secret"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -21567,7 +21724,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -21639,7 +21796,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -21735,7 +21893,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Secret"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -22103,7 +22262,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -22151,7 +22310,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ServiceAccount"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -22395,7 +22555,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -22467,7 +22627,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -22563,7 +22724,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ServiceAccount"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -22671,7 +22833,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -22690,7 +22852,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.authentication.v1.TokenRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -23078,7 +23241,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -23126,7 +23289,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Service"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -23370,7 +23534,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -23442,7 +23606,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -23538,7 +23703,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Service"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24125,7 +24291,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -24197,7 +24363,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24293,7 +24460,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Service"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24507,7 +24675,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -24579,7 +24747,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24675,7 +24844,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Namespace"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24773,7 +24943,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -24792,7 +24962,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Namespace"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -24901,7 +25072,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -24973,7 +25144,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -25069,7 +25241,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Namespace"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -25427,7 +25600,7 @@
       },
       "parameters": [
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -25475,7 +25648,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Node"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -25709,7 +25883,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -25781,7 +25955,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -25877,7 +26052,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Node"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -26434,7 +26610,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -26506,7 +26682,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -26602,7 +26779,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.Node"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -26756,7 +26934,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -27111,7 +27289,7 @@
       },
       "parameters": [
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -27159,7 +27337,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolume"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -27393,7 +27572,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -27465,7 +27644,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -27561,7 +27741,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolume"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -27670,7 +27851,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -27742,7 +27923,8 @@
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -27838,7 +28020,8 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolume"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -27992,7 +28175,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28143,7 +28326,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28294,7 +28477,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28445,7 +28628,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28596,7 +28779,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28747,7 +28930,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -28898,7 +29081,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29049,7 +29232,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29200,7 +29383,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29351,7 +29534,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29502,7 +29685,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29653,7 +29836,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29814,7 +29997,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -29985,7 +30168,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30146,7 +30329,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30317,7 +30500,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30478,7 +30661,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30649,7 +30832,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30810,7 +30993,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -30981,7 +31164,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31142,7 +31325,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31313,7 +31496,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31474,7 +31657,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31645,7 +31828,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31806,7 +31989,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -31977,7 +32160,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32138,7 +32321,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32309,7 +32492,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32470,7 +32653,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32641,7 +32824,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32802,7 +32985,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -32973,7 +33156,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33134,7 +33317,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33305,7 +33488,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33466,7 +33649,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33637,7 +33820,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33798,7 +33981,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -33949,7 +34132,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34110,7 +34293,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34261,7 +34444,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34412,7 +34595,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34573,7 +34756,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34724,7 +34907,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -34875,7 +35058,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -35026,7 +35209,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -35177,7 +35360,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -35328,7 +35511,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -35479,7 +35662,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -35630,7 +35813,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {

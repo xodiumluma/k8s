@@ -176,6 +176,8 @@ func (p *restrictedProfile) Apply(pod *corev1.Pod, containerName string, target 
 	clearSecurityContext(pod, containerName)
 	disallowRoot(pod, containerName)
 	dropCapabilities(pod, containerName)
+	disallowPrivilegeEscalation(pod, containerName)
+	setSeccompProfile(pod, containerName)
 
 	switch style {
 	case podCopy:
@@ -199,9 +201,11 @@ func (p *netadminProfile) Apply(pod *corev1.Pod, containerName string, target ru
 	switch style {
 	case node:
 		useHostNamespaces(pod)
-		setPrivileged(pod, containerName)
 
-	case podCopy, ephemeral:
+	case podCopy:
+		shareProcessNamespace(pod)
+
+	case ephemeral:
 		// no additional modifications needed
 	}
 
@@ -215,6 +219,7 @@ func removeLabelsAndProbes(p *corev1.Pod) {
 	for i := range p.Spec.Containers {
 		p.Spec.Containers[i].LivenessProbe = nil
 		p.Spec.Containers[i].ReadinessProbe = nil
+		p.Spec.Containers[i].StartupProbe = nil
 	}
 }
 
@@ -266,20 +271,6 @@ func clearSecurityContext(p *corev1.Pod, containerName string) {
 	})
 }
 
-// setPrivileged configures the containers as privileged.
-func setPrivileged(p *corev1.Pod, containerName string) {
-	podutils.VisitContainers(&p.Spec, podutils.AllContainers, func(c *corev1.Container, _ podutils.ContainerType) bool {
-		if c.Name != containerName {
-			return true
-		}
-		if c.SecurityContext == nil {
-			c.SecurityContext = &corev1.SecurityContext{}
-		}
-		c.SecurityContext.Privileged = pointer.Bool(true)
-		return false
-	})
-}
-
 // disallowRoot configures the container to run as a non-root user.
 func disallowRoot(p *corev1.Pod, containerName string) {
 	podutils.VisitContainers(&p.Spec, podutils.AllContainers, func(c *corev1.Container, _ podutils.ContainerType) bool {
@@ -323,13 +314,14 @@ func allowProcessTracing(p *corev1.Pod, containerName string) {
 	})
 }
 
-// allowNetadminCapability grants NET_ADMIN capability to the container.
+// allowNetadminCapability grants NET_ADMIN and NET_RAW capability to the container.
 func allowNetadminCapability(p *corev1.Pod, containerName string) {
 	podutils.VisitContainers(&p.Spec, podutils.AllContainers, func(c *corev1.Container, _ podutils.ContainerType) bool {
 		if c.Name != containerName {
 			return true
 		}
 		addCapability(c, "NET_ADMIN")
+		addCapability(c, "NET_RAW")
 		return false
 	})
 }
@@ -342,4 +334,32 @@ func addCapability(c *corev1.Container, capability corev1.Capability) {
 		c.SecurityContext.Capabilities = &corev1.Capabilities{}
 	}
 	c.SecurityContext.Capabilities.Add = append(c.SecurityContext.Capabilities.Add, capability)
+}
+
+// disallowPrivilegeEscalation configures the containers not allowed PrivilegeEscalation
+func disallowPrivilegeEscalation(p *corev1.Pod, containerName string) {
+	podutils.VisitContainers(&p.Spec, podutils.AllContainers, func(c *corev1.Container, _ podutils.ContainerType) bool {
+		if c.Name != containerName {
+			return true
+		}
+		if c.SecurityContext == nil {
+			c.SecurityContext = &corev1.SecurityContext{}
+		}
+		c.SecurityContext.AllowPrivilegeEscalation = pointer.Bool(false)
+		return false
+	})
+}
+
+// setSeccompProfile apply SeccompProfile to the containers
+func setSeccompProfile(p *corev1.Pod, containerName string) {
+	podutils.VisitContainers(&p.Spec, podutils.AllContainers, func(c *corev1.Container, _ podutils.ContainerType) bool {
+		if c.Name != containerName {
+			return true
+		}
+		if c.SecurityContext == nil {
+			c.SecurityContext = &corev1.SecurityContext{}
+		}
+		c.SecurityContext.SeccompProfile = &corev1.SeccompProfile{Type: "RuntimeDefault"}
+		return false
+	})
 }
